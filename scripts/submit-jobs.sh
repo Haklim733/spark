@@ -1,0 +1,1 @@
+docker exec spark-master spark-submit /home/app/src/test_job.py

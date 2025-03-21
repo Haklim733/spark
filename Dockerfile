@@ -1,4 +1,9 @@
-FROM spark:3.5.4-java17-python3 
+
+FROM bitnami/spark:3.5.4
+
+ENV SPARK_VERSION=3.5.4
+ENV SPARK_MAJOR_VERSION=3.5
+ENV ICEBERG_VERSION=1.8.1
 
 # Configure environment
 ENV SHELL=/bin/bash \
@@ -7,7 +12,7 @@ ENV SHELL=/bin/bash \
     LANGUAGE=C.UTF-8
 
 ENV HOME="/home/app"
-ENV SPARK_HOME="/opt/spark"
+ENV SPARK_HOME="/opt/bitnami/spark"
 
 USER root
 
@@ -15,7 +20,10 @@ WORKDIR ${HOME}
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+    curl \
     git \
+    iputils-ping \
+    rsync \
     sudo \
     ssh \
     vim \
@@ -23,18 +31,14 @@ RUN apt-get update && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN ln -s /usr/bin/python3 /usr/bin/python
-
-ENV SPARK_VERSION=3.5.4
-ENV SPARK_MAJOR_VERSION=3.5
-ENV ICEBERG_VERSION=1.8.1
-
-RUN curl https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-${SPARK_MAJOR_VERSION}_2.12/${ICEBERG_VERSION}/iceberg-spark-runtime-${SPARK_MAJOR_VERSION}_2.12-${ICEBERG_VERSION}.jar -Lo ${SPARK_HOME}/jars/iceberg-spark-runtime-${SPARK_MAJOR_VERSION}_2.12-${ICEBERG_VERSION}.jar
-RUN wget https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar -P ${SPARK_HOME}/jars
-RUN wget https://repo1.maven.org/maven2/org/apache/spark/spark-avro_2.12/${SPARK_VERSION}/spark-avro_2.12-${SPARK_VERSION}.jar -P ${SPARK_HOME}/jars
-RUN wget https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar -P ${SPARK_HOME}/jars 
-
+RUN curl https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-${SPARK_MAJOR_VERSION}_2.12/${ICEBERG_VERSION}/iceberg-spark-runtime-${SPARK_MAJOR_VERSION}_2.12-${ICEBERG_VERSION}.jar \
+    -Lo ${SPARK_HOME}/jars/iceberg-spark-runtime-${SPARK_MAJOR_VERSION}_2.12-${ICEBERG_VERSION}.jar
+RUN curl https://repo1.maven.org/maven2/org/apache/spark/spark-avro_2.12/${SPARK_VERSION}/spark-avro_2.12-${SPARK_VERSION}.jar \
+    -Lo ${SPARK_HOME}/jars/spark-avro_2.12-${SPARK_VERSION}.jar
 RUN curl -s https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/${ICEBERG_VERSION}/iceberg-aws-bundle-${ICEBERG_VERSION}.jar -Lo ${SPARK_HOME}/jars/iceberg-aws-bundle-${ICEBERG_VERSION}.jar
+
+# RUN curl https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar \
+#     -Lo ${SPARK_HOME}/jars/commons-pool2-2.11.1.jar
 
 # Install AWS CLI
 RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
@@ -47,11 +51,14 @@ ENV PYTHONPATH=$SPARK_HOME/python:$SPARK_HOME/python/lib/py4j-0.10.9.7-src.zip
 
 COPY requirements.txt .
 RUN pip3 install -r requirements.txt
+ENV PYSPARK_PYTHON=python3
+ENV PYSPARK_DRIVER_PYTHON=python3
 
-RUN mkdir -p ${HOME}/data ${HOME}/localwarehouse ${HOME}/notebooks ${HOME}/warehouse %{HOME}/spark-events
-
-RUN chmod u+x /opt/spark/sbin/* && \
-    chmod u+x /opt/spark/bin/*
+RUN chmod u+x /opt//bitnami/spark/sbin/* && \
+    chmod u+x /opt/bitnami/spark/bin/*
 ENV PATH="/opt/spark/sbin:/opt/spark/bin:${PATH}"
 
+# COPY ./scripts/start-spark.sh /opt/bitnami/spark/start-spark.sh
+# RUN chmod +x /opt/bitnami/spark/start-spark.sh
+# ENTRYPOINT ["/opt/bitnami/spark/start-spark.sh"]
 CMD [ "bash" ]

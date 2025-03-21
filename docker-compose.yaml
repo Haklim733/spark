@@ -1,108 +1,127 @@
 services:
   spark-master:
     container_name: spark-master
+    hostname: spark-master
     build: .
+    networks:
+      - spark-network
+    ports:
+      - "8080:8080"
+      - "7077:7077"
     environment:
+      - SPARK_MASTER=spark://spark-master:7077
+      - SPARK_MASTER_PORT=7077
       - SPARK_LOCAL_IP=spark-master
+      - SPARK_MASTER_HOST=spark-master
       - SPARK_WORKLOAD=master
       - AWS_ACCESS_KEY_ID=admin
       - AWS_SECRET_ACCESS_KEY=password
       - AWS_REGION=us-east-1
-    ports:
-      - '8080:8080'
-      - '7077:7077'
-      - '4040:4040'
+      - SPARK_WEBUI_PORT=8080
+      - SPARK_MASTER_LOG=/opt/bitnami/spark/logs/spark-master.out
+      - SPARK_WORKER_LOG=/opt/bitnami/spark/logs/spark-worker.out
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
     healthcheck:
-        test: [ "CMD", "curl", "-f", "http://localhost:8080" ]
-        interval: 5s
-        timeout: 3s
-        retries: 3
+      test: ["CMD", "curl", "-f", "http://spark-master:8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
     volumes:
       - ./src:/home/app/src
-      - ./scripts:/home/appscripts
-      - ./data:/opt/spark/data
-      - ./spark-logs:/opt/spark/spark-events
+      - ./scripts:/home/app/scripts
+      - ./spark-logs/master:/opt/bitnami/spark/logs/spark-events
+      - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
     env_file:
       - .env.spark
-    entrypoint: /bin/bash
-    command: -c "/opt/spark/bin/start-master.sh; tail -f /dev/null"
-  spark-history-server:
+    command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.master.Master
+  spark-history:
     container_name: spark-history
     build: .
     depends_on:
-      - spark-master
+      spark-master:
+        condition: service_healthy
     networks:
-      spark:
-    env_file:
-      - .env.spark
+      - spark-network
     volumes:
-      - ./src:/opt/spark/src
-      - ./scripts:/home/appscripts
-      - ./data:/opt/spark/data
-      - ./spark-logs:/opt/spark/spark-events
+      - ./src:/home/app/src
+      - ./scripts:/home/apps/cripts
+      - ./spark-logs/history:/opt/bitnami/spark/logs/spark-events
+      - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
     ports:
-      - '18080:18080' 
-    entrypoint: /bin/bash
-    command: -c "/opt/spark/bin/start-history-server.sh  spark://spark-master:7077; tail -f /dev/null"
-  worker-a:
+      - "18080:18080"
+    command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.history.HistoryServer
+  spark-worker:
     container_name: spark-worker-a
     build: .
     depends_on:
-      - spark-master
+      spark-master:
+        condition: service_healthy
     networks:
-      spark:
+      - spark-network
     environment:
+      - SPARK_MODE=worker
       - SPARK_MASTER=spark://spark-master:7077
+      - SPARK_MASTER_HOST=spark-master
+      - SPARK_WEBUI_PORT=8080
+      - SPARK_MASTER_LOG=/opt/bitnami/spark/logs/spark-master.out
+      - SPARK_WORKER_LOG=/opt/bitnami/spark/logs/spark-worker.out
       - SPARK_WORKER_CORES=1
       - SPARK_WORKER_MEMORY=1G
       - SPARK_DRIVER_MEMORY=1G
       - SPARK_EXECUTOR_MEMORY=1G
       - SPARK_WORKLOAD=worker
       - SPARK_LOCAL_IP=spark-worker-a
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
     volumes:
-      - ./scripts:/opt/spark/scripts
-      - ./data:/opt/spark/data
-      - ./spark-logs:/opt/spark/spark-events
-    entrypoint: /bin/bash
-    command: -c "/opt/spark/bin/start-worker.sh  spark://spark-master:7077; tail -f /dev/null"
+      - ./scripts:/home/app/scripts
+      - ./spark-logs/worker:/opt/bitnami/spark/logs/spark-events
+      - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+    command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
   rest:
     image: apache/iceberg-rest-fixture
     container_name: spark-rest
     networks:
-      spark:
+      - spark-network
+    depends_on:
+      - minio
     ports:
       - 8181:8181
     environment:
       - AWS_ACCESS_KEY_ID=admin
       - AWS_SECRET_ACCESS_KEY=password
       - AWS_REGION=us-east-1
-      - CATALOG_WAREHOUSE=s3://warehouse/
+      - CATALOG_S3_REGION=us-east-1
+      - CATALOG_WAREHOUSE=s3://data/warehouse
       - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
       - CATALOG_S3_ENDPOINT=http://minio:9000
   minio:
     image: minio/minio
     container_name: spark-minio
+    networks:
+      spark-network:
+        aliases:
+          - data.minio # important for spark to write to minio <bucket>.minio
     environment:
       - MINIO_ROOT_USER=admin
       - MINIO_ROOT_PASSWORD=password
       - MINIO_DOMAIN=minio
-    networks:
-      spark:
-        aliases:
-          - warehouse.minio
     ports:
       - 9001:9001
       - 9000:9000
-    volumes:
-      - ./data:/data
-    command: [ "server", "/data", "--console-address", ":9001" ]
+    command: ["server", "/data", "--console-address", ":9001"]
   mc:
     depends_on:
       - minio
     image: minio/mc
     container_name: spark-mc
     networks:
-      spark:
+      - spark-network
     environment:
       - AWS_ACCESS_KEY_ID=admin
       - AWS_SECRET_ACCESS_KEY=password
@@ -112,9 +131,11 @@ services:
       until (/usr/bin/mc config host add minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
       /usr/bin/mc rm -r --force minio/data;
       /usr/bin/mc mb minio/data;
-      /usr/bin/mc policy set public minio/data;
+      /usr/bin/mc anonymous set public minio/data;
       set +o history;
-      tail -f /dev/null
-      "
+      tail -f /dev/null"
+volumes:
+  spark-logs:
 networks:
-  spark:
+  spark-network:
+    driver: bridge

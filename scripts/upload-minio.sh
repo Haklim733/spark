@@ -10,5 +10,5 @@ DATA_DIR="data"
 
 # Copy all .parquet files to Minio
 for file in data/*.parquet; do
-    mc cp "$file" spark-minio/warehouse/
+    mc cp "$file" spark-minio/data/
 done

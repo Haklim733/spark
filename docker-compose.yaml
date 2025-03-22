@@ -55,7 +55,7 @@ services:
       - "18080:18080"
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.history.HistoryServer
   spark-worker:
-    container_name: spark-worker-a
+    # container_name: spark-worker-a
     build: .
     depends_on:
       spark-master:
@@ -74,15 +74,21 @@ services:
       - SPARK_DRIVER_MEMORY=1G
       - SPARK_EXECUTOR_MEMORY=1G
       - SPARK_WORKLOAD=worker
-      - SPARK_LOCAL_IP=spark-worker-a
+      - SPARK_LOCAL_IP=spark-worker
       - AWS_ACCESS_KEY_ID=admin
       - AWS_SECRET_ACCESS_KEY=password
       - AWS_REGION=us-east-1
+      - SPARK_WORKER_LOG=/tmp/worker-logs/spark-worker.out
+      - SPARK_EXECUTOR_LOGS_DIR=/tmp/worker-logs/executor
     volumes:
       - ./scripts:/home/app/scripts
       - ./spark-logs/worker:/opt/bitnami/spark/logs/spark-events
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+      - ./logs/workers/worker.out:/opt/bitnami/spark/logs/spark-worker.out
+      - ./logs/worker/executor:/opt/bitnami/spark/logs/executor
+      # Mount events directory separately
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    scale: 1
   rest:
     image: apache/iceberg-rest-fixture
     container_name: spark-rest

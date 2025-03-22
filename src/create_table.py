@@ -69,7 +69,6 @@ def main():
     df_first = spark.read.parquet(file_path)
     df_first.writeTo(f"iceberg.{db_name}.{table_name}").using("iceberg").tableProperty("write.merge.isolation-level", "snapshot").create()
     df_first.createOrReplaceTempView("temp_data")
-    first_file = parquet_files[0]
 
     
     # Process the first file to create the table

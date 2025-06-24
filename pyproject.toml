@@ -6,5 +6,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "pyiceberg[pyarrow]>=0.9.0",
-    "pyspark>=3.5.5",
+    "pyspark-client>=4.0.0",
+    "soli-data-generator>=0.1.0",
 ]

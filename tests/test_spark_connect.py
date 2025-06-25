@@ -5,17 +5,11 @@ Simple test script to verify Spark Connect is working
 """
 
 import warnings
+import pytest
 from pyspark.sql import SparkSession
 
-# Suppress protobuf version warnings
-warnings.filterwarnings("ignore", message=".*Protobuf gencode version.*")
-# Suppress Spark Connect configuration warnings
-warnings.filterwarnings("ignore", message=".*Failed to set spark.eventLog.dir.*")
-warnings.filterwarnings(
-    "ignore", message=".*Cannot modify the value of the Spark config.*"
-)
 
-
+@pytest.mark.skip(reason="Spark Connect (4.0) is not enabled in this environment.")
 def test_spark_connect():
     """Test basic Spark Connect functionality"""
     print("Testing Spark Connect connection...")

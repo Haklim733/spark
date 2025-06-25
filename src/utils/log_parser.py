@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
 Parse Spark Event Logs to extract shuffling metrics and performance data
+Enhanced to work with HybridLogger and retrieve logs from multiple sources
 """
 
 import json
 import sys
+import os
+import glob
+import re
 from collections import defaultdict
 import argparse
+from typing import Dict, List, Any
 
 
 # ANSI color codes for better readability
@@ -20,6 +25,205 @@ class Colors:
     ENDC = "\033[0m"
     BOLD = "\033[1m"
     UNDERLINE = "\033[4m"
+
+
+class HybridLogRetriever:
+    """Enhanced log retriever that works with HybridLogger output"""
+
+    def __init__(self, spark_logs_dir: str = "./spark-logs"):
+        self.spark_logs_dir = spark_logs_dir
+        self.logs = {
+            "executor_logs": [],
+            "driver_logs": [],
+            "custom_metrics": [],
+            "business_events": [],
+            "performance_metrics": [],
+            "errors": [],
+        }
+
+    def find_log_files(self) -> Dict[str, List[str]]:
+        """Find all log files in the spark-logs directory"""
+        log_files = {
+            "executor_stdout": [],
+            "executor_stderr": [],
+            "driver_logs": [],
+            "event_logs": [],
+            "worker_logs": [],
+        }
+
+        # Find executor stdout logs
+        executor_stdout_pattern = os.path.join(
+            self.spark_logs_dir, "**", "executor", "*", "stdout"
+        )
+        log_files["executor_stdout"] = glob.glob(
+            executor_stdout_pattern, recursive=True
+        )
+
+        # Find executor stderr logs
+        executor_stderr_pattern = os.path.join(
+            self.spark_logs_dir, "**", "executor", "*", "stderr"
+        )
+        log_files["executor_stderr"] = glob.glob(
+            executor_stderr_pattern, recursive=True
+        )
+
+        # Find driver logs
+        driver_pattern = os.path.join(self.spark_logs_dir, "spark-driver.out")
+        if os.path.exists(driver_pattern):
+            log_files["driver_logs"] = [driver_pattern]
+
+        # Find event logs (JSON format)
+        event_pattern = os.path.join(self.spark_logs_dir, "*.json")
+        log_files["event_logs"] = glob.glob(event_pattern)
+
+        # Find worker logs
+        worker_pattern = os.path.join(self.spark_logs_dir, "**", "spark-worker.out")
+        log_files["worker_logs"] = glob.glob(worker_pattern, recursive=True)
+
+        return log_files
+
+    def parse_hybrid_logs(
+        self, log_files: List[str]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Parse logs for HybridLogger output"""
+        parsed_logs = {
+            "custom_metrics": [],
+            "business_events": [],
+            "performance_metrics": [],
+            "errors": [],
+        }
+
+        for log_file in log_files:
+            try:
+                with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+
+                lines = content.split("\n")
+                for line_num, line in enumerate(lines, 1):
+                    if line.strip():
+                        # Parse different log types from HybridLogger
+                        if "CUSTOM_METRICS:" in line:
+                            try:
+                                json_start = line.find("{")
+                                if json_start != -1:
+                                    json_str = line[json_start:]
+                                    parsed_metrics = json.loads(json_str)
+                                    parsed_logs["custom_metrics"].append(
+                                        {
+                                            "file": log_file,
+                                            "line": line_num,
+                                            "timestamp": self.extract_timestamp(line),
+                                            "data": parsed_metrics,
+                                        }
+                                    )
+                            except json.JSONDecodeError:
+                                continue
+
+                        elif "BUSINESS_EVENT:" in line:
+                            try:
+                                json_start = line.find("{")
+                                if json_start != -1:
+                                    json_str = line[json_start:]
+                                    parsed_event = json.loads(json_str)
+                                    parsed_logs["business_events"].append(
+                                        {
+                                            "file": log_file,
+                                            "line": line_num,
+                                            "timestamp": self.extract_timestamp(line),
+                                            "data": parsed_event,
+                                        }
+                                    )
+                            except json.JSONDecodeError:
+                                continue
+
+                        elif "PERFORMANCE_METRICS:" in line:
+                            try:
+                                json_start = line.find("{")
+                                if json_start != -1:
+                                    json_str = line[json_start:]
+                                    parsed_perf = json.loads(json_str)
+                                    parsed_logs["performance_metrics"].append(
+                                        {
+                                            "file": log_file,
+                                            "line": line_num,
+                                            "timestamp": self.extract_timestamp(line),
+                                            "data": parsed_perf,
+                                        }
+                                    )
+                            except json.JSONDecodeError:
+                                continue
+
+                        elif "ERROR:" in line:
+                            try:
+                                json_start = line.find("{")
+                                if json_start != -1:
+                                    json_str = line[json_start:]
+                                    parsed_error = json.loads(json_str)
+                                    parsed_logs["errors"].append(
+                                        {
+                                            "file": log_file,
+                                            "line": line_num,
+                                            "timestamp": self.extract_timestamp(line),
+                                            "data": parsed_error,
+                                        }
+                                    )
+                            except json.JSONDecodeError:
+                                continue
+
+            except Exception as e:
+                print(f"Error reading {log_file}: {e}")
+
+        return parsed_logs
+
+    def extract_timestamp(self, line: str) -> str:
+        """Extract timestamp from log line"""
+        patterns = [
+            r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})",
+            r"(\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2})",
+            r"(\d{2}:\d{2}:\d{2})",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, line)
+            if match:
+                return match.group(1)
+
+        return "unknown"
+
+    def get_hybrid_logs_summary(self) -> Dict[str, Any]:
+        """Get summary of HybridLogger output"""
+        log_files = self.find_log_files()
+        executor_logs = self.parse_hybrid_logs(log_files["executor_stdout"])
+
+        summary = {
+            "total_log_files": sum(len(files) for files in log_files.values()),
+            "custom_metrics_count": len(executor_logs["custom_metrics"]),
+            "business_events_count": len(executor_logs["business_events"]),
+            "performance_metrics_count": len(executor_logs["performance_metrics"]),
+            "errors_count": len(executor_logs["errors"]),
+            "recent_logs": {
+                "custom_metrics": (
+                    executor_logs["custom_metrics"][-5:]
+                    if executor_logs["custom_metrics"]
+                    else []
+                ),
+                "business_events": (
+                    executor_logs["business_events"][-5:]
+                    if executor_logs["business_events"]
+                    else []
+                ),
+                "performance_metrics": (
+                    executor_logs["performance_metrics"][-5:]
+                    if executor_logs["performance_metrics"]
+                    else []
+                ),
+                "errors": (
+                    executor_logs["errors"][-5:] if executor_logs["errors"] else []
+                ),
+            },
+        }
+
+        return summary
 
 
 def print_header(title):
@@ -65,11 +269,90 @@ def format_bytes(bytes_val):
         return f"{bytes_val/(1024*1024*1024):.1f}GB"
 
 
-def parse_spark_logs(log_file_path):
+def display_hybrid_logs_summary(retriever: HybridLogRetriever):
+    """Display summary of HybridLogger output"""
+    summary = retriever.get_hybrid_logs_summary()
+
+    print_header("HYBRID LOGGER SUMMARY")
+
+    print(f"  📁 Total log files found: {summary['total_log_files']}")
+    print(f"  📊 Custom metrics: {summary['custom_metrics_count']}")
+    print(f"  📋 Business events: {summary['business_events_count']}")
+    print(f"  ⚡ Performance metrics: {summary['performance_metrics_count']}")
+    print(f"  ❌ Errors: {summary['errors_count']}")
+
+    # Display recent logs
+    if summary["recent_logs"]["custom_metrics"]:
+        print_section("RECENT CUSTOM METRICS")
+        for log in summary["recent_logs"]["custom_metrics"]:
+            data = log["data"]
+            print(
+                f"  📊 {data.get('Operation', 'Unknown')} - {data.get('Job Group', 'Unknown')}"
+            )
+            if "Metrics" in data:
+                metrics = data["Metrics"]
+                if "data_skew_ratio" in metrics:
+                    skew = metrics["data_skew_ratio"]
+                    if skew > 10:
+                        print(
+                            f"    Data Skew: {Colors.FAIL}🚨 {skew:.1f}x (SEVERE){Colors.ENDC}"
+                        )
+                    elif skew > 5:
+                        print(
+                            f"    Data Skew: {Colors.WARNING}⚠️  {skew:.1f}x (HIGH){Colors.ENDC}"
+                        )
+                    else:
+                        print(
+                            f"    Data Skew: {Colors.OKGREEN}✅ {skew:.1f}x (LOW){Colors.ENDC}"
+                        )
+
+    if summary["recent_logs"]["business_events"]:
+        print_section("RECENT BUSINESS EVENTS")
+        for log in summary["recent_logs"]["business_events"]:
+            data = log["data"]
+            print(
+                f"  📋 {data.get('event_type', 'Unknown')} - {data.get('job_id', 'Unknown')}"
+            )
+
+    if summary["recent_logs"]["performance_metrics"]:
+        print_section("RECENT PERFORMANCE METRICS")
+        for log in summary["recent_logs"]["performance_metrics"]:
+            data = log["data"]
+            operation = data.get("operation", "Unknown")
+            exec_time = data.get("execution_time_ms", 0)
+            if exec_time > 1000:
+                print(
+                    f"  ⚡ {operation}: {Colors.FAIL}🚨 {exec_time:.0f}ms (SLOW){Colors.ENDC}"
+                )
+            elif exec_time > 500:
+                print(
+                    f"  ⚡ {operation}: {Colors.WARNING}⚠️  {exec_time:.0f}ms (MODERATE){Colors.ENDC}"
+                )
+            else:
+                print(
+                    f"  ⚡ {operation}: {Colors.OKGREEN}✅ {exec_time:.0f}ms (FAST){Colors.ENDC}"
+                )
+
+    if summary["recent_logs"]["errors"]:
+        print_section("RECENT ERRORS")
+        for log in summary["recent_logs"]["errors"]:
+            data = log["data"]
+            print(
+                f"  ❌ {data.get('error_type', 'Unknown')}: {data.get('error_message', 'Unknown')}"
+            )
+
+
+def parse_spark_logs(log_file_path, include_hybrid_logs=True):
     """Parse Spark event logs and extract key metrics"""
 
     print_header("SPARK PERFORMANCE ANALYSIS")
     print(f"📁 Analyzing log file: {log_file_path}")
+
+    # Initialize hybrid log retriever if requested
+    hybrid_retriever = None
+    if include_hybrid_logs:
+        hybrid_retriever = HybridLogRetriever()
+        display_hybrid_logs_summary(hybrid_retriever)
 
     # Metrics storage
     jobs = {}
@@ -89,7 +372,7 @@ def parse_spark_logs(log_file_path):
         with open(log_file_path, "r") as f:
             for line_num, line in enumerate(f, 1):
                 try:
-                    # Check for custom metrics lines first
+                    # Check for custom metrics lines first (HybridLogger format)
                     if line.strip().startswith("CUSTOM_METRICS:"):
                         custom_metrics_json = line.strip().replace(
                             "CUSTOM_METRICS: ", ""
@@ -269,6 +552,7 @@ def display_custom_metrics_from_logs(custom_metrics):
             f"\n  {Colors.WARNING}📋 No custom metrics found in Spark logs{Colors.ENDC}"
         )
         print(f"    Custom metrics are now integrated into Spark logs during execution")
+        print(f"    Use HybridLogger for better performance and structured logging")
         return
 
     print_header("CUSTOM METRICS FROM SPARK LOGS")
@@ -864,7 +1148,7 @@ def print_function_summary(function_summary):
 def main():
     """Main function"""
     parser = argparse.ArgumentParser(
-        description="Parse a Spark event log file for shuffling metrics and performance data."
+        description="Parse a Spark event log file for shuffling metrics and performance data. Enhanced to work with HybridLogger."
     )
     parser.add_argument(
         "--file-path",
@@ -876,18 +1160,48 @@ def main():
         nargs="?",
         help="(Optional) Path to the Spark event log file (positional)",
     )
+    parser.add_argument(
+        "--no-hybrid-logs",
+        action="store_true",
+        help="Disable hybrid logging analysis (only parse Spark event logs)",
+    )
+    parser.add_argument(
+        "--hybrid-only",
+        action="store_true",
+        help="Only analyze hybrid logs (skip Spark event log parsing)",
+    )
+    parser.add_argument(
+        "--logs-dir",
+        default="./spark-logs",
+        help="Directory containing Spark logs (default: ./spark-logs)",
+    )
     args = parser.parse_args()
 
     # Priority: positional > --file-path > default
     log_file = args.log_file or args.file_path
+
+    # Handle hybrid-only mode
+    if args.hybrid_only:
+        print_header("HYBRID LOGGER ANALYSIS ONLY")
+        retriever = HybridLogRetriever(args.logs_dir)
+        display_hybrid_logs_summary(retriever)
+        return
+
+    # Handle regular parsing with optional hybrid logs
     if not log_file:
         print(
             "Error: You must specify a log file path with --file-path or as a positional argument."
         )
+        print("\nAvailable options:")
+        print("  --hybrid-only: Analyze only hybrid logs (no Spark event log required)")
+        print("  --no-hybrid-logs: Disable hybrid logging analysis")
+        print("  --logs-dir: Specify logs directory (default: ./spark-logs)")
         parser.print_help()
         sys.exit(1)
 
-    parse_spark_logs(log_file)
+    # Parse with hybrid logs enabled by default (unless --no-hybrid-logs is specified)
+    include_hybrid_logs = not args.no_hybrid_logs
+    parse_spark_logs(log_file, include_hybrid_logs=include_hybrid_logs)
 
 
 if __name__ == "__main__":

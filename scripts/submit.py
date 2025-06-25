@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple job submission script - run with: python src/submit.py <file_path>
+Simple job submission script - run with: python scripts/submit.py <file_path>
 """
 
 import subprocess

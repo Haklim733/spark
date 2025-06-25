@@ -5,265 +5,21 @@ Shows common shuffling problems and how to identify them
 Uses SQL operations whenever possible for better Spark Connect compatibility
 """
 
-import os
 import random
-from typing import List, Dict, Tuple
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    udf,
-    col,
-    explode,
-    array,
-    lit,
-    row_number,
-    count,
-    sum as spark_sum,
-    avg,
-    max as spark_max,
-    min as spark_min,
-)
 from pyspark.sql.types import (
     StringType,
-    ArrayType,
     StructType,
     StructField,
     IntegerType,
     LongType,
-    DoubleType,
 )
-from pyspark.sql.window import Window
 import time
 from datetime import datetime
-import json
+from utils import MetricsTracker, create_spark_session
 
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "admin")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "password")
-
-
-# Global metrics tracking
-class MetricsTracker:
-    def __init__(self):
-        self.metrics = {}
-        self.current_job_group = None
-        self.current_operation = None
-
-    def start_operation(self, job_group: str, operation: str):
-        """Start tracking metrics for a new operation"""
-        self.current_job_group = job_group
-        self.current_operation = operation
-        if job_group not in self.metrics:
-            self.metrics[job_group] = {}
-        if operation not in self.metrics[job_group]:
-            self.metrics[job_group][operation] = {
-                "start_time": time.time(),
-                "data_skew_ratio": 0,
-                "partition_count": 0,
-                "record_count": 0,
-                "unique_keys": 0,
-                "max_key_frequency": 0,
-                "min_key_frequency": 0,
-                "shuffle_partitions": 0,
-                "memory_usage_mb": 0,
-                "execution_plan_complexity": "low",
-            }
-
-    def record_data_metrics(self, spark: SparkSession, table_name: str = "skewed_data"):
-        """Record data distribution metrics and output to Spark logs"""
-        if not self.current_job_group or not self.current_operation:
-            return
-
-        try:
-            # Get data distribution
-            distribution_df = spark.sql(
-                f"""
-                SELECT key, COUNT(*) as frequency
-                FROM {table_name}
-                GROUP BY key
-                ORDER BY frequency DESC
-            """
-            )
-
-            distribution = distribution_df.collect()
-
-            if distribution:
-                frequencies = [row["frequency"] for row in distribution]
-                max_freq = max(frequencies)
-                min_freq = min(frequencies)
-                total_records = sum(frequencies)
-                unique_keys = len(frequencies)
-
-                # Calculate skew ratio (max frequency / average frequency)
-                avg_freq = total_records / unique_keys
-                skew_ratio = max_freq / avg_freq if avg_freq > 0 else 0
-
-                # Get partition count
-                partition_count = spark.sql(
-                    f"SELECT COUNT(DISTINCT key) as partitions FROM {table_name}"
-                ).collect()[0]["partitions"]
-
-                # Get shuffle partitions setting
-                shuffle_partitions = spark.conf.get(
-                    "spark.sql.shuffle.partitions", "200"
-                )
-
-                # Get memory configuration
-                executor_memory = spark.conf.get("spark.executor.memory", "1g")
-                driver_memory = spark.conf.get("spark.driver.memory", "1g")
-                memory_fraction = spark.conf.get("spark.memory.fraction", "0.6")
-                storage_fraction = spark.conf.get("spark.memory.storageFraction", "0.5")
-
-                # Calculate memory usage (approximate)
-                # This is a rough estimate based on data size and operations
-                estimated_memory_mb = (total_records * 100) / (
-                    1024 * 1024
-                )  # Rough estimate: 100 bytes per record
-
-                # Update metrics
-                self.metrics[self.current_job_group][self.current_operation].update(
-                    {
-                        "data_skew_ratio": round(skew_ratio, 2),
-                        "partition_count": partition_count,
-                        "record_count": total_records,
-                        "unique_keys": unique_keys,
-                        "max_key_frequency": max_freq,
-                        "min_key_frequency": min_freq,
-                        "shuffle_partitions": int(shuffle_partitions),
-                        "execution_plan_complexity": (
-                            "high"
-                            if unique_keys > 1000
-                            else "medium" if unique_keys > 100 else "low"
-                        ),
-                        "executor_memory": executor_memory,
-                        "driver_memory": driver_memory,
-                        "memory_fraction": float(memory_fraction),
-                        "storage_fraction": float(storage_fraction),
-                        "estimated_memory_mb": round(estimated_memory_mb, 2),
-                    }
-                )
-
-                # Output custom metrics as structured log entry
-                custom_metrics_event = {
-                    "Event": "CustomMetricsEvent",
-                    "Job Group": self.current_job_group,
-                    "Operation": self.current_operation,
-                    "Timestamp": int(time.time() * 1000),
-                    "Metrics": {
-                        "data_skew_ratio": round(skew_ratio, 2),
-                        "partition_count": partition_count,
-                        "record_count": total_records,
-                        "unique_keys": unique_keys,
-                        "max_key_frequency": max_freq,
-                        "min_key_frequency": min_freq,
-                        "shuffle_partitions": int(shuffle_partitions),
-                        "execution_plan_complexity": (
-                            "high"
-                            if unique_keys > 1000
-                            else "medium" if unique_keys > 100 else "low"
-                        ),
-                        "executor_memory": executor_memory,
-                        "driver_memory": driver_memory,
-                        "memory_fraction": float(memory_fraction),
-                        "storage_fraction": float(storage_fraction),
-                        "estimated_memory_mb": round(estimated_memory_mb, 2),
-                    },
-                }
-
-                # Log the custom metrics event
-                print(f"CUSTOM_METRICS: {json.dumps(custom_metrics_event)}")
-
-        except Exception as e:
-            print(f"Error recording data metrics: {e}")
-
-    def end_operation(self, execution_time: float, result_count: int = 0):
-        """End tracking metrics for current operation and output to Spark logs"""
-        if not self.current_job_group or not self.current_operation:
-            return
-
-        self.metrics[self.current_job_group][self.current_operation].update(
-            {
-                "execution_time": round(execution_time, 2),
-                "result_count": result_count,
-                "end_time": time.time(),
-            }
-        )
-
-        # Output operation completion metrics as structured log entry
-        completion_event = {
-            "Event": "CustomOperationCompletion",
-            "Job Group": self.current_job_group,
-            "Operation": self.current_operation,
-            "Timestamp": int(time.time() * 1000),
-            "Execution Time": round(execution_time, 2),
-            "Result Count": result_count,
-        }
-
-        # Log the completion event
-        print(f"CUSTOM_COMPLETION: {json.dumps(completion_event)}")
-
-    def get_metrics(self) -> Dict:
-        """Get all recorded metrics"""
-        return self.metrics
-
-    def save_metrics(self, filename: str = "shuffling_metrics.json"):
-        """Save metrics to JSON file (kept for backward compatibility)"""
-        try:
-            with open(filename, "w") as f:
-                json.dump(self.metrics, f, indent=2)
-            print(f"Metrics saved to {filename}")
-        except Exception as e:
-            print(f"Error saving metrics: {e}")
-
-
-# Global metrics tracker instance
-metrics_tracker = MetricsTracker()
-
-
-def get_spark_session() -> SparkSession:
-    """Create and configure Spark session with shuffling monitoring using regular PySpark"""
-
-    spark = (
-        SparkSession.builder.appName("ShufflingIssuesDemo")
-        .config("spark.sql.streaming.schemaInference", "true")
-        .config(
-            "spark.sql.extensions",
-            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
-        )
-        .config("spark.sql.catalog.iceberg", "org.apache.iceberg.spark.SparkCatalog")
-        .config("spark.sql.defaultCatalog", "iceberg")
-        .config("spark.sql.catalog.iceberg.type", "rest")
-        .config("spark.sql.catalog.iceberg.uri", "http://spark-rest:8181")
-        .config("spark.sql.catalog.iceberg.s3.endpoint", "http://minio:9000")
-        .config("spark.sql.catalog.iceberg.warehouse", "s3://data/wh")
-        .config("spark.sql.catalog.iceberg.s3.access-key", AWS_ACCESS_KEY_ID)
-        .config("spark.sql.catalog.iceberg.s3.secret-key", AWS_SECRET_ACCESS_KEY)
-        .config("spark.sql.catalog.iceberg.s3.region", "us-east-1")
-        .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.access.key", AWS_ACCESS_KEY_ID)
-        .config("spark.hadoop.fs.s3a.secret.key", AWS_SECRET_ACCESS_KEY)
-        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
-        .config("spark.hadoop.fs.s3a.region", "us-east-1")
-        .config("spark.hadoop.fs.s3a.path.style.access", "true")
-        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-        # Shuffling-specific configurations
-        .config("spark.sql.adaptive.enabled", "true")
-        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
-        .config("spark.sql.adaptive.skewJoin.enabled", "true")
-        .config("spark.sql.adaptive.localShuffleReader.enabled", "true")
-        .config("spark.sql.shuffle.partitions", "200")  # Default shuffle partitions
-        .config("spark.sql.adaptive.advisoryPartitionSizeInBytes", "128m")
-        .config("spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes", "256m")
-        .config("spark.sql.adaptive.skewJoin.skewedPartitionFactor", "5")
-        # Monitoring configurations
-        .config("spark.eventLog.enabled", "true")
-        .config("spark.eventLog.dir", "file:///opt/bitnami/spark/logs")
-        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
-        .master(
-            "spark://spark-master:7077"
-        )  # Use Spark cluster instead of Spark Connect
-        .getOrCreate()
-    )
-
-    return spark
+# Global metrics tracker instance (will be initialized in main)
+metrics_tracker = None
 
 
 def generate_skewed_data(spark: SparkSession, num_records: int = 1000000):
@@ -332,7 +88,9 @@ def generate_skewed_data(spark: SparkSession, num_records: int = 1000000):
 
     # Record data metrics
     metrics_tracker.record_data_metrics(spark, "skewed_data")
-    metrics_tracker.end_operation(0, total_count)  # Data generation time is negligible
+    metrics_tracker.end_operation(
+        spark, 0, total_count
+    )  # Data generation time is negligible
 
     # Use SQL for distribution analysis - this creates a separate job
     spark.sparkContext.setJobGroup(
@@ -357,7 +115,7 @@ def generate_skewed_data(spark: SparkSession, num_records: int = 1000000):
 
     # End metrics tracking
     execution_time = time.time() - start_time
-    metrics_tracker.end_operation(execution_time, result.count())
+    metrics_tracker.end_operation(spark, execution_time, result.count())
 
     # Clear job group
     spark.sparkContext.clearJobGroup()
@@ -440,7 +198,7 @@ def demonstrate_data_skew(spark: SparkSession, df):
 
     # Record metrics
     metrics_tracker.record_data_metrics(spark, "skewed_data")
-    metrics_tracker.end_operation(execution_time, result_count)
+    metrics_tracker.end_operation(spark, execution_time, result_count)
 
     log_with_timestamp(f"Data Skew Demo completed in {execution_time:.2f} seconds")
 
@@ -487,7 +245,7 @@ def demonstrate_data_skew(spark: SparkSession, df):
 
     # End metrics tracking
     execution_time = time.time() - start_time
-    metrics_tracker.end_operation(execution_time, result.count())
+    metrics_tracker.end_operation(spark, execution_time, result.count())
 
     # Clear job group
     spark.sparkContext.clearJobGroup()
@@ -532,7 +290,7 @@ def demonstrate_large_shuffle_partitions(spark: SparkSession, df):
 
     # Record metrics
     metrics_tracker.record_data_metrics(spark, "skewed_data")
-    metrics_tracker.end_operation(execution_time, result_count)
+    metrics_tracker.end_operation(spark, execution_time, result_count)
 
     log_with_timestamp(
         f"Large Partitions Demo completed in {execution_time:.2f} seconds"
@@ -598,7 +356,7 @@ def demonstrate_small_shuffle_partitions(spark: SparkSession, df):
 
     # Record metrics
     metrics_tracker.record_data_metrics(spark, "skewed_data")
-    metrics_tracker.end_operation(execution_time, result_count)
+    metrics_tracker.end_operation(spark, execution_time, result_count)
 
     log_with_timestamp(
         f"Small Partitions Demo completed in {execution_time:.2f} seconds"
@@ -1191,10 +949,14 @@ def main():
 
     try:
         # Create Spark session
-        spark = get_spark_session()
+        spark = create_spark_session()
 
         # Set log level for regular PySpark
         spark.sparkContext.setLogLevel("INFO")
+
+        # Initialize global metrics tracker with Spark session
+        global metrics_tracker
+        metrics_tracker = MetricsTracker(spark)
 
         # Generate skewed data
         log_with_timestamp("Generating test data...")
@@ -1221,6 +983,15 @@ def main():
 
         # Save and display custom metrics
         metrics_tracker.save_metrics("shuffling_metrics.json")
+
+        # Display logging performance summary
+        logging_summary = metrics_tracker.get_logging_performance_summary()
+        log_with_timestamp("=== LOGGING PERFORMANCE SUMMARY ===")
+        log_with_timestamp(f"Total logs generated: {logging_summary['total_logs']}")
+        log_with_timestamp(f"Total time: {logging_summary['total_time_seconds']}s")
+        log_with_timestamp(f"Logs per second: {logging_summary['logs_per_second']}")
+        log_with_timestamp(f"Async logging enabled: {logging_summary['async_enabled']}")
+        log_with_timestamp(f"Job ID: {logging_summary['job_id']}")
 
         # Display metrics summary
         log_with_timestamp("Custom Metrics Summary:")
@@ -1254,9 +1025,10 @@ def main():
         log_with_timestamp("5. Window functions can cause significant shuffling")
         log_with_timestamp("6. Use adaptive query execution for automatic optimization")
         log_with_timestamp("7. Monitor Spark Web UI for shuffling metrics")
+        log_with_timestamp("8. Hybrid logging provides optimal performance")
         log_with_timestamp("Next steps:")
         log_with_timestamp(
-            "• Run 'python src/parse_logs.py --file-path spark-logs/app-*' to analyze performance"
+            "• Run 'python src/utils/log_parser.py --file-path spark-logs/app-*' to analyze performance"
         )
         log_with_timestamp(
             "• Check Spark Web UI at http://localhost:8080 for detailed metrics"
@@ -1267,6 +1039,9 @@ def main():
         log_with_timestamp(
             "• Review shuffling_metrics.json for custom performance metrics"
         )
+        log_with_timestamp(
+            "• Use 'python src/retrieve_logs.py --search CUSTOM_METRICS' to find custom metrics"
+        )
 
     except Exception as e:
         log_with_timestamp(f"Error in shuffling demonstration: {str(e)}")
@@ -1274,6 +1049,10 @@ def main():
 
         traceback.print_exc()
     finally:
+        # Shutdown the hybrid logger
+        if metrics_tracker:
+            metrics_tracker.shutdown()
+
         if "spark" in locals():
             log_with_timestamp("Stopping Spark session...")
             spark.stop()

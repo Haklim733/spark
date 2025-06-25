@@ -37,6 +37,8 @@ services:
     volumes:
       - ./src:/home/app/src
       - ./scripts:/home/app/scripts
+      - ./tests:/home/app/tests
+      - ./pyproject.toml:/home/app/pyproject.toml
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
     env_file:
@@ -52,7 +54,9 @@ services:
       - spark-network
     volumes:
       - ./src:/home/app/src
+      - ./tests:/home/app/tests
       - ./scripts:/home/app/scripts
+      - ./pyproject.toml:/home/app/pyproject.toml
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
     ports:
@@ -85,8 +89,7 @@ services:
       - AWS_ACCESS_KEY_ID=admin
       - AWS_SECRET_ACCESS_KEY=password
       - AWS_REGION=us-east-1
-      - SPARK_WORKER_LOG=/tmp/worker-logs/spark-worker.out
-      - SPARK_EXECUTOR_LOGS_DIR=/tmp/worker-logs/executor
+      - SPARK_EXECUTOR_LOGS_DIR=/opt/bitnami/spark/logs/executor
       # Spark 3.5 specific configurations
       - SPARK_VERSION=3.5.6
       - SPARK_MAJOR_VERSION=3.5
@@ -103,10 +106,8 @@ services:
       start_period: 45s
     volumes:
       - ./scripts:/home/app/scripts
-      - ./spark-logs:/opt/bitnami/spark/logs
+      - ./spark-logs/worker-${HOSTNAME:-worker}:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
-      - ./logs/workers/worker.out:/opt/bitnami/spark/logs/spark-worker.out
-      - ./logs/worker/executor:/opt/bitnami/spark/logs/executor
       # Mount events directory separately
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     scale: 2  # This creates 2 worker instances

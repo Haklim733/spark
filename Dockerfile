@@ -1,9 +1,8 @@
+FROM bitnami/spark:3.5.6
 
-FROM bitnami/spark:3.5.4
-
-ENV SPARK_VERSION=3.5.4
+ENV SPARK_VERSION=3.5.6
 ENV SPARK_MAJOR_VERSION=3.5
-ENV ICEBERG_VERSION=1.8.1
+ENV ICEBERG_VERSION=1.9.1
 
 # Configure environment
 ENV SHELL=/bin/bash \
@@ -43,7 +42,7 @@ RUN curl -s https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle
 # Install AWS CLI
 RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
     && unzip awscliv2.zip \
-    && sudo ./aws/install \
+    && sudo ./aws/install --update \
     && rm awscliv2.zip \
     && rm -rf aws/
 

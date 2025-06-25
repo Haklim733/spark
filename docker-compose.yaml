@@ -1,6 +1,5 @@
 services:
-  spark-master:
-    image: bitnami/spark:4.0.0
+  spark-master: 
     container_name: spark-master
     hostname: spark-master
     build: .
@@ -26,9 +25,9 @@ services:
       - SPARK_RPC_ENCRYPTION_ENABLED=no
       - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
       - SPARK_SSL_ENABLED=no
-      # Spark 4.0 specific configurations
-      - SPARK_VERSION=4.0.0
-      - SPARK_MAJOR_VERSION=4.0
+      # Spark 3.5 specific configurations
+      - SPARK_VERSION=3.5.6
+      - SPARK_MAJOR_VERSION=3.5
     healthcheck:
       test: ["CMD", "pgrep", "-f", "org.apache.spark.deploy.master.Master"]
       interval: 10s
@@ -38,7 +37,7 @@ services:
     volumes:
       - ./src:/home/app/src
       - ./scripts:/home/app/scripts
-      - ./spark-logs/master:/opt/bitnami/spark/logs/spark-events
+      - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
     env_file:
       - .env.spark
@@ -54,16 +53,16 @@ services:
     volumes:
       - ./src:/home/app/src
       - ./scripts:/home/app/scripts
-      - ./spark-logs/history:/opt/bitnami/spark/logs/spark-events
+      - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
     ports:
       - "18080:18080"
     environment:
-      - SPARK_VERSION=4.0.0
-      - SPARK_MAJOR_VERSION=4.0
+      - SPARK_VERSION=3.5.6
+      - SPARK_MAJOR_VERSION=3.5
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.history.HistoryServer
   spark-worker:
-    image: bitnami/spark:4.0.0
+    image: bitnami/spark:3.5.6
     build: .
     depends_on:
       spark-master:
@@ -88,10 +87,10 @@ services:
       - AWS_REGION=us-east-1
       - SPARK_WORKER_LOG=/tmp/worker-logs/spark-worker.out
       - SPARK_EXECUTOR_LOGS_DIR=/tmp/worker-logs/executor
-      # Spark 4.0 specific configurations
-      - SPARK_VERSION=4.0.0
-      - SPARK_MAJOR_VERSION=4.0
-      # Spark 4.0 performance optimizations
+      # Spark 3.5 specific configurations
+      - SPARK_VERSION=3.5.6
+      - SPARK_MAJOR_VERSION=3.5
+      # Spark 3.5 performance optimizations
       - SPARK_SQL_ADAPTIVE_ENABLED=true
       - SPARK_SQL_ADAPTIVE_COALESCE_PARTITIONS_ENABLED=true
       - SPARK_SQL_ADAPTIVE_SKEW_JOIN_ENABLED=true
@@ -104,7 +103,7 @@ services:
       start_period: 45s
     volumes:
       - ./scripts:/home/app/scripts
-      - ./spark-logs/worker:/opt/bitnami/spark/logs/spark-events
+      - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
       - ./logs/workers/worker.out:/opt/bitnami/spark/logs/spark-worker.out
       - ./logs/worker/executor:/opt/bitnami/spark/logs/executor
@@ -118,6 +117,7 @@ services:
       - spark-network
     depends_on:
       - minio
+      - postgres
     ports:
       - 8181:8181
     environment:
@@ -128,6 +128,12 @@ services:
       - CATALOG_WAREHOUSE=s3://data/warehouse
       - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
       - CATALOG_S3_ENDPOINT=http://minio:9000
+      # PostgreSQL connection for Iceberg REST API
+      - CATALOG_DB_HOST=postgres
+      - CATALOG_DB_PORT=5432
+      - CATALOG_DB_NAME=iceberg
+      - CATALOG_DB_USER=iceberg
+      - CATALOG_DB_PASSWORD=iceberg
   minio:
     image: minio/minio
     container_name: spark-minio
@@ -162,8 +168,27 @@ services:
       /usr/bin/mc anonymous set public minio/data;
       set +o history;
       tail -f /dev/null"
+  postgres:
+    image: postgres:16-alpine
+    container_name: spark-postgres
+    networks:
+      - spark-network
+    environment:
+      - POSTGRES_DB=iceberg
+      - POSTGRES_USER=iceberg
+      - POSTGRES_PASSWORD=iceberg
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iceberg -d iceberg"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 volumes:
   spark-logs:
+  postgres_data:
 networks:
   spark-network:
     driver: bridge

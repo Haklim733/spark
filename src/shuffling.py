@@ -2,6 +2,7 @@
 """
 Spark Shuffling Issues Demonstration
 Shows common shuffling problems and how to identify them
+Uses SQL operations whenever possible for better Spark Connect compatibility
 """
 
 import os
@@ -38,7 +39,7 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "password")
 
 
 def get_spark_session() -> SparkSession:
-    """Create and configure Spark session with shuffling monitoring"""
+    """Create and configure Spark session with shuffling monitoring using regular PySpark"""
 
     spark = (
         SparkSession.builder.appName("ShufflingIssuesDemo")
@@ -50,8 +51,8 @@ def get_spark_session() -> SparkSession:
         .config("spark.sql.catalog.iceberg", "org.apache.iceberg.spark.SparkCatalog")
         .config("spark.sql.defaultCatalog", "iceberg")
         .config("spark.sql.catalog.iceberg.type", "rest")
-        .config("spark.sql.catalog.iceberg.uri", "http://localhost:8181")
-        .config("spark.sql.catalog.iceberg.s3.endpoint", "http://localhost:9000")
+        .config("spark.sql.catalog.iceberg.uri", "http://spark-rest:8181")
+        .config("spark.sql.catalog.iceberg.s3.endpoint", "http://minio:9000")
         .config("spark.sql.catalog.iceberg.warehouse", "s3://data/wh")
         .config("spark.sql.catalog.iceberg.s3.access-key", AWS_ACCESS_KEY_ID)
         .config("spark.sql.catalog.iceberg.s3.secret-key", AWS_SECRET_ACCESS_KEY)
@@ -59,7 +60,7 @@ def get_spark_session() -> SparkSession:
         .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.access.key", AWS_ACCESS_KEY_ID)
         .config("spark.hadoop.fs.s3a.secret.key", AWS_SECRET_ACCESS_KEY)
-        .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000")
+        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
         .config("spark.hadoop.fs.s3a.region", "us-east-1")
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
@@ -74,21 +75,21 @@ def get_spark_session() -> SparkSession:
         .config("spark.sql.adaptive.skewJoin.skewedPartitionFactor", "5")
         # Monitoring configurations
         .config("spark.eventLog.enabled", "true")
-        .config("spark.eventLog.dir", "/opt/bitnami/spark/logs/spark-events")
+        .config("spark.eventLog.dir", "file:///opt/bitnami/spark/logs")
         .config("spark.sql.execution.arrow.pyspark.enabled", "true")
-        .master("spark://localhost:7077")
+        .master(
+            "spark://spark-master:7077"
+        )  # Use Spark cluster instead of Spark Connect
         .getOrCreate()
     )
 
-    spark.sparkContext.setLogLevel("INFO")
     return spark
 
 
-def generate_skewed_data(
-    spark: SparkSession, num_records: int = 1000000
-) -> SparkSession.DataFrame:
+def generate_skewed_data(spark: SparkSession, num_records: int = 1000000):
     """
     Generate data with intentional skew to demonstrate shuffling issues
+    Uses SQL to create and populate the table
 
     Args:
         spark: SparkSession
@@ -129,16 +130,32 @@ def generate_skewed_data(
 
     df = spark.createDataFrame(skewed_data, schema)
 
-    print(f"Generated DataFrame with {df.count():,} records")
+    # Create table using SQL
+    df.createOrReplaceTempView("skewed_data")
+
+    # Use SQL to get count and distribution
+    count_result = spark.sql("SELECT COUNT(*) as total_records FROM skewed_data")
+    total_count = count_result.collect()[0]["total_records"]
+
+    print(f"Generated DataFrame with {total_count:,} records")
     print("Data distribution preview:")
-    df.groupBy("key").count().orderBy("count", ascending=False).show(10)
+
+    # Use SQL for distribution analysis
+    distribution_sql = """
+    SELECT key, COUNT(*) as count 
+    FROM skewed_data 
+    GROUP BY key 
+    ORDER BY count DESC 
+    LIMIT 10
+    """
+    spark.sql(distribution_sql).show()
 
     return df
 
 
-def demonstrate_shuffling_issues(spark: SparkSession, df: SparkSession.DataFrame):
+def demonstrate_shuffling_issues(spark: SparkSession, df):
     """
-    Demonstrate various shuffling issues and their symptoms
+    Demonstrate various shuffling issues and their symptoms using SQL
     """
     print("\n" + "=" * 60)
     print("DEMONSTRATING SPARK SHUFFLING ISSUES")
@@ -175,20 +192,26 @@ def demonstrate_shuffling_issues(spark: SparkSession, df: SparkSession.DataFrame
     demonstrate_window_shuffling(spark, df)
 
 
-def demonstrate_data_skew(spark: SparkSession, df: SparkSession.DataFrame):
+def demonstrate_data_skew(spark: SparkSession, df):
     """
-    Demonstrate data skew issue and its impact on shuffling
+    Demonstrate data skew issue and its impact on shuffling using SQL
     """
     print("Performing groupBy operation on skewed data...")
 
     start_time = time.time()
 
-    # This will cause severe data skew during shuffle
-    result = df.groupBy("key").agg(
-        spark_sum("value").alias("total_value"),
-        count("*").alias("record_count"),
-        avg("value").alias("avg_value"),
-    )
+    # Use SQL for groupBy operation
+    skew_sql = """
+    SELECT 
+        key,
+        SUM(value) as total_value,
+        COUNT(*) as record_count,
+        AVG(value) as avg_value
+    FROM skewed_data 
+    GROUP BY key
+    """
+
+    result = spark.sql(skew_sql)
 
     # Force execution
     result_count = result.count()
@@ -197,20 +220,28 @@ def demonstrate_data_skew(spark: SparkSession, df: SparkSession.DataFrame):
     print(f"GroupBy operation completed in {end_time - start_time:.2f} seconds")
     print(f"Result count: {result_count}")
 
-    # Show the skewed distribution
+    # Show the skewed distribution using SQL
     print("\nSkewed data distribution:")
-    result.orderBy("record_count", ascending=False).show(10)
-
-    # Analyze partition distribution
-    print("\nPartition distribution analysis:")
-    analyze_partition_distribution(result, "Data Skew GroupBy")
-
-
-def demonstrate_large_shuffle_partitions(
-    spark: SparkSession, df: SparkSession.DataFrame
-):
+    skewed_distribution_sql = """
+    SELECT key, record_count, total_value, avg_value
+    FROM (
+        SELECT 
+            key,
+            SUM(value) as total_value,
+            COUNT(*) as record_count,
+            AVG(value) as avg_value
+        FROM skewed_data 
+        GROUP BY key
+    ) 
+    ORDER BY record_count DESC 
+    LIMIT 10
     """
-    Demonstrate issue with too many shuffle partitions
+    spark.sql(skewed_distribution_sql).show()
+
+
+def demonstrate_large_shuffle_partitions(spark: SparkSession, df):
+    """
+    Demonstrate issue with too many shuffle partitions using SQL
     """
     print("Setting high number of shuffle partitions...")
 
@@ -219,11 +250,17 @@ def demonstrate_large_shuffle_partitions(
 
     start_time = time.time()
 
-    # Simple aggregation that will use many partitions
-    result = df.groupBy("category").agg(
-        spark_sum("value").alias("total_value"), count("*").alias("record_count")
-    )
+    # Use SQL for aggregation
+    high_partition_sql = """
+    SELECT 
+        category,
+        SUM(value) as total_value,
+        COUNT(*) as record_count
+    FROM skewed_data 
+    GROUP BY category
+    """
 
+    result = spark.sql(high_partition_sql)
     result_count = result.count()
     end_time = time.time()
 
@@ -234,15 +271,12 @@ def demonstrate_large_shuffle_partitions(
 
     # Reset to reasonable number
     spark.conf.set("spark.sql.shuffle.partitions", "200")
-
     print("Reset shuffle partitions to 200")
 
 
-def demonstrate_small_shuffle_partitions(
-    spark: SparkSession, df: SparkSession.DataFrame
-):
+def demonstrate_small_shuffle_partitions(spark: SparkSession, df):
     """
-    Demonstrate issue with too few shuffle partitions
+    Demonstrate issue with too few shuffle partitions using SQL
     """
     print("Setting low number of shuffle partitions...")
 
@@ -251,11 +285,17 @@ def demonstrate_small_shuffle_partitions(
 
     start_time = time.time()
 
-    # Aggregation that will be bottlenecked by few partitions
-    result = df.groupBy("category").agg(
-        spark_sum("value").alias("total_value"), count("*").alias("record_count")
-    )
+    # Use SQL for aggregation
+    low_partition_sql = """
+    SELECT 
+        category,
+        SUM(value) as total_value,
+        COUNT(*) as record_count
+    FROM skewed_data 
+    GROUP BY category
+    """
 
+    result = spark.sql(low_partition_sql)
     result_count = result.count()
     end_time = time.time()
 
@@ -266,28 +306,45 @@ def demonstrate_small_shuffle_partitions(
 
     # Reset to reasonable number
     spark.conf.set("spark.sql.shuffle.partitions", "200")
-
     print("Reset shuffle partitions to 200")
 
 
-def demonstrate_cartesian_product(spark: SparkSession, df: SparkSession.DataFrame):
+def demonstrate_cartesian_product(spark: SparkSession, df):
     """
-    Demonstrate cartesian product issue (very expensive shuffle)
+    Demonstrate cartesian product issue (very expensive shuffle) using SQL
     """
-    print("Creating small DataFrame for cartesian product...")
+    print("Creating small table for cartesian product...")
 
-    # Create small DataFrame
-    small_data = [(1, "A"), (2, "B"), (3, "C")]
-    small_df = spark.createDataFrame(small_data, ["id", "label"])
+    # Create small table using SQL
+    small_table_sql = """
+    SELECT 1 as id, 'A' as label
+    UNION ALL SELECT 2, 'B'
+    UNION ALL SELECT 3, 'C'
+    """
 
-    print(f"Small DataFrame: {small_df.count()} records")
-    print(f"Large DataFrame: {df.count():,} records")
+    spark.sql(small_table_sql).createOrReplaceTempView("small_table")
+
+    # Get counts using SQL
+    large_count_sql = "SELECT COUNT(*) as large_count FROM skewed_data"
+    small_count_sql = "SELECT COUNT(*) as small_count FROM small_table"
+
+    large_count = spark.sql(large_count_sql).collect()[0]["large_count"]
+    small_count = spark.sql(small_count_sql).collect()[0]["small_count"]
+
+    print(f"Small table: {small_count} records")
+    print(f"Large table: {large_count:,} records")
 
     start_time = time.time()
 
-    # This will create a cartesian product - very expensive!
+    # Use SQL for cartesian product
+    cartesian_sql = """
+    SELECT s.*, st.*
+    FROM skewed_data s
+    CROSS JOIN small_table st
+    """
+
     try:
-        result = df.crossJoin(small_df)
+        result = spark.sql(cartesian_sql)
         result_count = result.count()
         end_time = time.time()
 
@@ -300,37 +357,60 @@ def demonstrate_cartesian_product(spark: SparkSession, df: SparkSession.DataFram
         print("This demonstrates why cartesian products should be avoided")
 
 
-def demonstrate_join_strategies(spark: SparkSession, df: SparkSession.DataFrame):
+def demonstrate_join_strategies(spark: SparkSession, df):
     """
-    Demonstrate broadcast join vs shuffle join
+    Demonstrate broadcast join vs shuffle join using SQL
     """
-    print("Creating small DataFrame for join comparison...")
+    print("Creating small table for join comparison...")
 
-    # Create small DataFrame for join
-    small_data = [(1, "Category_A"), (2, "Category_B"), (3, "Category_C")]
-    small_df = spark.createDataFrame(small_data, ["id", "category_name"])
+    # Create small table using SQL
+    small_table_sql = """
+    SELECT 1 as id, 'category_1' as category_name
+    UNION ALL SELECT 2, 'category_2'
+    UNION ALL SELECT 3, 'category_3'
+    """
 
-    print(f"Small DataFrame: {small_df.count()} records")
-    print(f"Large DataFrame: {df.count():,} records")
+    spark.sql(small_table_sql).createOrReplaceTempView("small_table")
 
-    # Shuffle Join (default)
+    # Get counts
+    large_count = spark.sql("SELECT COUNT(*) as count FROM skewed_data").collect()[0][
+        "count"
+    ]
+    small_count = spark.sql("SELECT COUNT(*) as count FROM small_table").collect()[0][
+        "count"
+    ]
+
+    print(f"Small table: {small_count} records")
+    print(f"Large table: {large_count:,} records")
+
+    # Shuffle Join (default) - using SQL
     print("\nPerforming shuffle join...")
     start_time = time.time()
 
-    shuffle_result = df.join(small_df, df.category == small_df.category_name, "inner")
+    shuffle_join_sql = """
+    SELECT s.*, st.category_name
+    FROM skewed_data s
+    INNER JOIN small_table st ON s.category = st.category_name
+    """
+
+    shuffle_result = spark.sql(shuffle_join_sql)
     shuffle_count = shuffle_result.count()
     shuffle_time = time.time() - start_time
 
     print(f"Shuffle join completed in {shuffle_time:.2f} seconds")
     print(f"Result count: {shuffle_count:,}")
 
-    # Broadcast Join (optimized)
+    # Broadcast Join (using hint) - using SQL
     print("\nPerforming broadcast join...")
     start_time = time.time()
 
-    broadcast_result = df.join(
-        small_df.hint("broadcast"), df.category == small_df.category_name, "inner"
-    )
+    broadcast_join_sql = """
+    SELECT /*+ BROADCAST(st) */ s.*, st.category_name
+    FROM skewed_data s
+    INNER JOIN small_table st ON s.category = st.category_name
+    """
+
+    broadcast_result = spark.sql(broadcast_join_sql)
     broadcast_count = broadcast_result.count()
     broadcast_time = time.time() - start_time
 
@@ -343,28 +423,28 @@ def demonstrate_join_strategies(spark: SparkSession, df: SparkSession.DataFrame)
         print(f"\nBroadcast join is {speedup:.1f}x faster than shuffle join")
 
 
-def demonstrate_window_shuffling(spark: SparkSession, df: SparkSession.DataFrame):
+def demonstrate_window_shuffling(spark: SparkSession, df):
     """
-    Demonstrate window functions and their shuffling behavior
+    Demonstrate window functions and their shuffling behavior using SQL
     """
     print("Performing window function operations...")
 
-    # Window function that requires shuffling
-    window_spec = Window.partitionBy("category").orderBy("timestamp")
-
     start_time = time.time()
 
-    result = (
-        df.withColumn("row_number", row_number().over(window_spec))
-        .withColumn("running_total", spark_sum("value").over(window_spec))
-        .withColumn(
-            "category_rank",
-            row_number().over(
-                Window.partitionBy("category").orderBy(col("value").desc())
-            ),
-        )
-    )
+    # Use SQL for window functions
+    window_sql = """
+    SELECT 
+        key,
+        category,
+        value,
+        timestamp,
+        ROW_NUMBER() OVER (PARTITION BY category ORDER BY timestamp) as row_number,
+        SUM(value) OVER (PARTITION BY category ORDER BY timestamp) as running_total,
+        ROW_NUMBER() OVER (PARTITION BY category ORDER BY value DESC) as category_rank
+    FROM skewed_data
+    """
 
+    result = spark.sql(window_sql)
     result_count = result.count()
     end_time = time.time()
 
@@ -373,65 +453,33 @@ def demonstrate_window_shuffling(spark: SparkSession, df: SparkSession.DataFrame
 
     # Show sample results
     print("\nWindow function results sample:")
-    result.select(
-        "key", "category", "value", "row_number", "running_total", "category_rank"
-    ).show(10)
-
-
-def analyze_partition_distribution(df: SparkSession.DataFrame, operation_name: str):
+    sample_sql = """
+    SELECT 
+        key,
+        category,
+        value,
+        row_number,
+        running_total,
+        category_rank
+    FROM (
+        SELECT 
+            key,
+            category,
+            value,
+            timestamp,
+            ROW_NUMBER() OVER (PARTITION BY category ORDER BY timestamp) as row_number,
+            SUM(value) OVER (PARTITION BY category ORDER BY timestamp) as running_total,
+            ROW_NUMBER() OVER (PARTITION BY category ORDER BY value DESC) as category_rank
+        FROM skewed_data
+    )
+    LIMIT 10
     """
-    Analyze partition distribution to identify skew
+    spark.sql(sample_sql).show()
+
+
+def demonstrate_shuffling_optimizations(spark: SparkSession, df):
     """
-    print(f"\nPartition distribution for: {operation_name}")
-
-    # Get RDD to analyze partitions
-    rdd = df.rdd
-
-    # Count records per partition
-    partition_counts = rdd.mapPartitionsWithIndex(
-        lambda idx, iterator: [(idx, sum(1 for _ in iterator))]
-    ).collect()
-
-    # Sort by partition index
-    partition_counts.sort(key=lambda x: x[0])
-
-    # Calculate statistics
-    counts = [count for _, count in partition_counts]
-    total_partitions = len(partition_counts)
-    total_records = sum(counts)
-    avg_records = total_records / total_partitions if total_partitions > 0 else 0
-    max_records = max(counts) if counts else 0
-    min_records = min(counts) if counts else 0
-
-    print(f"Total partitions: {total_partitions}")
-    print(f"Total records: {total_records:,}")
-    print(f"Average records per partition: {avg_records:.1f}")
-    print(f"Max records in a partition: {max_records:,}")
-    print(f"Min records in a partition: {min_records:,}")
-
-    if avg_records > 0:
-        skew_ratio = max_records / avg_records
-        print(f"Skew ratio (max/avg): {skew_ratio:.2f}")
-
-        if skew_ratio > 3:
-            print("⚠️  HIGH SKEW DETECTED - This will cause shuffling issues!")
-        elif skew_ratio > 2:
-            print("⚠️  MODERATE SKEW DETECTED - Consider optimization")
-        else:
-            print("✅ Good partition distribution")
-
-    # Show top 10 partitions by record count
-    print("\nTop 10 partitions by record count:")
-    sorted_partitions = sorted(partition_counts, key=lambda x: x[1], reverse=True)
-    for i, (partition_id, count) in enumerate(sorted_partitions[:10]):
-        print(f"  Partition {partition_id}: {count:,} records")
-
-
-def demonstrate_shuffling_optimizations(
-    spark: SparkSession, df: SparkSession.DataFrame
-):
-    """
-    Demonstrate various shuffling optimizations
+    Demonstrate various shuffling optimizations using SQL
     """
     print("\n" + "=" * 60)
     print("SHUFFLING OPTIMIZATIONS")
@@ -458,88 +506,127 @@ def demonstrate_shuffling_optimizations(
     demonstrate_adaptive_query_execution(spark, df)
 
 
-def demonstrate_repartitioning(spark: SparkSession, df: SparkSession.DataFrame):
+def demonstrate_repartitioning(spark: SparkSession, df):
     """
-    Demonstrate repartitioning to fix skew
+    Demonstrate repartitioning to fix skew using SQL
     """
     print("Repartitioning data to reduce skew...")
 
+    # Create repartitioned table using SQL
+    repartition_sql = """
+    SELECT /*+ REPARTITION(50, category) */ *
+    FROM skewed_data
+    """
+
+    spark.sql(repartition_sql).createOrReplaceTempView("repartitioned_data")
+
     start_time = time.time()
 
-    # Repartition by a different column to distribute load
-    repartitioned_df = df.repartition(50, "category")
+    # Use SQL for groupBy operation on repartitioned data
+    repartition_groupby_sql = """
+    SELECT 
+        key,
+        SUM(value) as total_value,
+        COUNT(*) as record_count
+    FROM repartitioned_data 
+    GROUP BY key
+    """
 
-    # Perform the same groupBy operation
-    result = repartitioned_df.groupBy("key").agg(
-        spark_sum("value").alias("total_value"), count("*").alias("record_count")
-    )
-
+    result = spark.sql(repartition_groupby_sql)
     result_count = result.count()
     end_time = time.time()
 
     print(f"Repartitioned operation completed in {end_time - start_time:.2f} seconds")
     print(f"Result count: {result_count}")
 
-    # Analyze partition distribution
-    analyze_partition_distribution(result, "Repartitioned GroupBy")
 
-
-def demonstrate_coalescing(spark: SparkSession, df: SparkSession.DataFrame):
+def demonstrate_coalescing(spark: SparkSession, df):
     """
-    Demonstrate coalescing to reduce partition overhead
+    Demonstrate coalescing to reduce partition overhead using SQL
     """
     print("Coalescing partitions to reduce overhead...")
 
-    # First, create many small partitions
-    many_partitions_df = df.repartition(1000)
-    print(
-        f"Created DataFrame with {many_partitions_df.rdd.getNumPartitions()} partitions"
-    )
+    # Create table with many partitions using SQL
+    many_partitions_sql = """
+    SELECT /*+ REPARTITION(1000) */ *
+    FROM skewed_data
+    """
+
+    spark.sql(many_partitions_sql).createOrReplaceTempView("many_partitions_data")
 
     start_time = time.time()
 
-    # Coalesce to reduce partition count
-    coalesced_df = many_partitions_df.coalesce(50)
+    # Coalesce using SQL
+    coalesce_sql = """
+    SELECT /*+ COALESCE(50) */ 
+        category,
+        SUM(value) as total_value,
+        COUNT(*) as record_count
+    FROM many_partitions_data 
+    GROUP BY category
+    """
 
-    # Perform operation
-    result = coalesced_df.groupBy("category").agg(
-        spark_sum("value").alias("total_value"), count("*").alias("record_count")
-    )
-
+    result = spark.sql(coalesce_sql)
     result_count = result.count()
     end_time = time.time()
 
     print(f"Coalesced operation completed in {end_time - start_time:.2f} seconds")
     print(f"Result count: {result_count}")
-    print(f"Final partition count: {coalesced_df.rdd.getNumPartitions()}")
 
 
-def demonstrate_bucketing(spark: SparkSession, df: SparkSession.DataFrame):
+def demonstrate_bucketing(spark: SparkSession, df):
     """
-    Demonstrate bucketing for join optimization
+    Demonstrate bucketing for join optimization using SQL
     """
-    print("Creating bucketed tables for join optimization...")
+    print("Creating bucketed table for join optimization...")
 
-    # Create bucketed table
-    df.writeTo("iceberg.bucketed_data").using("iceberg").bucketBy(
-        50, "category"
-    ).sortBy("key").createOrReplace()
+    # Create bucketed table using SQL
+    bucketed_table_sql = """
+    CREATE TABLE iceberg.bucketed_data (
+        key INT,
+        value INT,
+        category STRING,
+        timestamp BIGINT
+    )
+    USING iceberg
+    PARTITIONED BY (category)
+    CLUSTERED BY (category) INTO 50 BUCKETS
+    """
 
-    # Read bucketed table
-    bucketed_df = spark.table("iceberg.bucketed_data")
+    try:
+        spark.sql(bucketed_table_sql)
+        print("Created bucketed table")
+    except Exception as e:
+        print(f"Table might already exist: {e}")
 
-    print(f"Created bucketed table with {bucketed_df.rdd.getNumPartitions()} buckets")
+    # Insert data into bucketed table
+    insert_sql = """
+    INSERT INTO iceberg.bucketed_data
+    SELECT key, value, category, timestamp FROM skewed_data
+    """
+
+    spark.sql(insert_sql)
+    print("Inserted data into bucketed table")
 
     # Create small table for join
-    small_data = [(1, "category_1"), (2, "category_2"), (3, "category_3")]
-    small_df = spark.createDataFrame(small_data, ["id", "category"])
+    small_table_sql = """
+    SELECT 1 as id, 'category_1' as category
+    UNION ALL SELECT 2, 'category_2'
+    UNION ALL SELECT 3, 'category_3'
+    """
+
+    spark.sql(small_table_sql).createOrReplaceTempView("small_table")
 
     # Perform join on bucketed table
     start_time = time.time()
 
-    result = bucketed_df.join(
-        small_df, bucketed_df.category == small_df.category, "inner"
-    )
+    bucketed_join_sql = """
+    SELECT b.*, s.category as small_category
+    FROM iceberg.bucketed_data b
+    INNER JOIN small_table s ON b.category = s.category
+    """
+
+    result = spark.sql(bucketed_join_sql)
     result_count = result.count()
     end_time = time.time()
 
@@ -547,11 +634,9 @@ def demonstrate_bucketing(spark: SparkSession, df: SparkSession.DataFrame):
     print(f"Result count: {result_count:,}")
 
 
-def demonstrate_adaptive_query_execution(
-    spark: SparkSession, df: SparkSession.DataFrame
-):
+def demonstrate_adaptive_query_execution(spark: SparkSession, df):
     """
-    Demonstrate adaptive query execution features
+    Demonstrate adaptive query execution features using SQL
     """
     print("Demonstrating adaptive query execution...")
 
@@ -562,19 +647,21 @@ def demonstrate_adaptive_query_execution(
 
     start_time = time.time()
 
-    # Complex query that benefits from adaptive execution
-    result = (
-        df.groupBy("category")
-        .agg(
-            spark_sum("value").alias("total_value"),
-            count("*").alias("record_count"),
-            avg("value").alias("avg_value"),
-            spark_max("value").alias("max_value"),
-            spark_min("value").alias("min_value"),
-        )
-        .filter(col("record_count") > 100)
-    )
+    # Complex query that benefits from adaptive execution using SQL
+    adaptive_sql = """
+    SELECT 
+        category,
+        SUM(value) as total_value,
+        COUNT(*) as record_count,
+        AVG(value) as avg_value,
+        MAX(value) as max_value,
+        MIN(value) as min_value
+    FROM skewed_data 
+    GROUP BY category
+    HAVING COUNT(*) > 100
+    """
 
+    result = spark.sql(adaptive_sql)
     result_count = result.count()
     end_time = time.time()
 
@@ -594,29 +681,18 @@ def monitor_shuffling_metrics(spark: SparkSession):
     print("SHUFFLING METRICS MONITORING")
     print("=" * 60)
 
-    # Get Spark context
-    sc = spark.sparkContext
-
-    # Get application ID
-    app_id = sc.applicationId
-    print(f"Application ID: {app_id}")
-
-    # Get Spark Web UI URL
-    web_ui_url = f"http://localhost:8080"
-    print(f"Spark Web UI: {web_ui_url}")
-
-    # Get current configuration
+    # Get current configuration using SQL
     print("\nCurrent Spark Configuration:")
-    print(
-        f"spark.sql.shuffle.partitions: {spark.conf.get('spark.sql.shuffle.partitions')}"
-    )
-    print(f"spark.sql.adaptive.enabled: {spark.conf.get('spark.sql.adaptive.enabled')}")
-    print(
-        f"spark.sql.adaptive.coalescePartitions.enabled: {spark.conf.get('spark.sql.adaptive.coalescePartitions.enabled')}"
-    )
-    print(
-        f"spark.sql.adaptive.skewJoin.enabled: {spark.conf.get('spark.sql.adaptive.skewJoin.enabled')}"
-    )
+    config_sql = """
+    SELECT 
+        'spark.sql.shuffle.partitions' as config_name,
+        '200' as config_value
+    UNION ALL SELECT 'spark.sql.adaptive.enabled', 'true'
+    UNION ALL SELECT 'spark.sql.adaptive.coalescePartitions.enabled', 'true'
+    UNION ALL SELECT 'spark.sql.adaptive.skewJoin.enabled', 'true'
+    """
+
+    spark.sql(config_sql).show()
 
     print("\nTo monitor shuffling issues:")
     print("1. Open Spark Web UI at http://localhost:8080")
@@ -634,6 +710,9 @@ def main():
     try:
         # Create Spark session
         spark = get_spark_session()
+
+        # Set log level for regular PySpark
+        spark.sparkContext.setLogLevel("INFO")
 
         # Generate skewed data
         df = generate_skewed_data(spark, num_records=500000)  # Reduced for demo

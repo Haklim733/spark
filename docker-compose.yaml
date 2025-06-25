@@ -64,6 +64,7 @@ services:
     environment:
       - SPARK_VERSION=3.5.6
       - SPARK_MAJOR_VERSION=3.5
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:///opt/bitnami/spark/logs
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.history.HistoryServer
   spark-worker:
     image: bitnami/spark:3.5.6
@@ -106,9 +107,8 @@ services:
       start_period: 45s
     volumes:
       - ./scripts:/home/app/scripts
-      - ./spark-logs/worker-${HOSTNAME:-worker}:/opt/bitnami/spark/logs
+      - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
-      # Mount events directory separately
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     scale: 2  # This creates 2 worker instances
   rest:

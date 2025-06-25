@@ -20,7 +20,7 @@ def spark_session_pyspark():
 
     try:
         spark = create_spark_session(
-            spark_version=SparkVersion.SPARK_3_5, app_name="PySparkTest"
+            spark_version=SparkVersion.SPARK_3_5, app_name="TestPySpark"
         )
         yield spark
         spark.stop()

@@ -71,13 +71,17 @@ def create_spark_session(
 
     Args:
         spark_version: SparkVersion enum specifying the type of session to create
-        app_name: Name of the Spark application
+        app_name: Name of the Spark application (used as prefix for event logs)
         iceberg_config: Optional IcebergConfig for Iceberg integration
         **additional_configs: Additional Spark configurations (overrides defaults)
 
     Returns:
         SparkSession: Configured Spark session
     """
+    # Create event log directory if it doesn't exist
+    log_dir = f"/opt/bitnami/spark/logs/{app_name}"
+    os.makedirs(log_dir, exist_ok=True)
+
     # Default performance configurations
     default_performance_configs = {
         "spark.sql.adaptive.enabled": "true",
@@ -89,7 +93,7 @@ def create_spark_session(
         "spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes": "256m",
         "spark.sql.adaptive.skewJoin.skewedPartitionFactor": "5",
         "spark.eventLog.enabled": "true",
-        "spark.eventLog.dir": "file:///opt/bitnami/spark/logs",
+        "spark.eventLog.dir": f"file:///opt/bitnami/spark/logs/{app_name}",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
     }
 
@@ -108,6 +112,10 @@ def _create_spark_connect_session(
     app_name: str, iceberg_config: Optional[IcebergConfig] = None, **additional_configs
 ) -> SparkSession:
     """Create a Spark Connect session (4.0+)"""
+    # Create event log directory if it doesn't exist
+    log_dir = f"/opt/bitnami/spark/logs/{app_name}"
+    os.makedirs(log_dir, exist_ok=True)
+
     builder = SparkSession.builder.appName(app_name).remote("sc://localhost:15002")
 
     # Apply Iceberg configurations if provided
@@ -126,6 +134,10 @@ def _create_pyspark_session(
     app_name: str, iceberg_config: Optional[IcebergConfig] = None, **additional_configs
 ) -> SparkSession:
     """Create a regular PySpark session (3.5)"""
+    # Create event log directory if it doesn't exist
+    log_dir = f"/opt/bitnami/spark/logs/{app_name}"
+    os.makedirs(log_dir, exist_ok=True)
+
     builder = SparkSession.builder.appName(app_name)
 
     # Apply Iceberg configurations if provided
@@ -143,62 +155,62 @@ def _create_pyspark_session(
     return builder.getOrCreate()
 
 
-def create_shuffling_spark_session(
-    app_name: str = "ShufflingIssuesDemo",
-) -> SparkSession:
-    """
-    Create and configure Spark session with shuffling monitoring using regular PySpark
+# def create_shuffling_spark_session(
+#     app_name: str = "ShufflingIssuesDemo",
+# ) -> SparkSession:
+#     """
+#     Create and configure Spark session with shuffling monitoring using regular PySpark
 
-    Args:
-        app_name: Name of the Spark application
+#     Args:
+#         app_name: Name of the Spark application
 
-    Returns:
-        SparkSession: Configured Spark session for shuffling demonstrations
-    """
-    # Get AWS credentials from environment
-    aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID", "admin")
-    aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY", "password")
+#     Returns:
+#         SparkSession: Configured Spark session for shuffling demonstrations
+#     """
+#     # Get AWS credentials from environment
+#     aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID", "admin")
+#     aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY", "password")
 
-    spark = (
-        SparkSession.builder.appName(app_name)
-        .config("spark.sql.streaming.schemaInference", "true")
-        .config(
-            "spark.sql.extensions",
-            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
-        )
-        .config("spark.sql.catalog.iceberg", "org.apache.iceberg.spark.SparkCatalog")
-        .config("spark.sql.defaultCatalog", "iceberg")
-        .config("spark.sql.catalog.iceberg.type", "rest")
-        .config("spark.sql.catalog.iceberg.uri", "http://spark-rest:8181")
-        .config("spark.sql.catalog.iceberg.s3.endpoint", "http://minio:9000")
-        .config("spark.sql.catalog.iceberg.warehouse", "s3://data/wh")
-        .config("spark.sql.catalog.iceberg.s3.access-key", aws_access_key_id)
-        .config("spark.sql.catalog.iceberg.s3.secret-key", aws_secret_access_key)
-        .config("spark.sql.catalog.iceberg.s3.region", "us-east-1")
-        .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.access.key", aws_access_key_id)
-        .config("spark.hadoop.fs.s3a.secret.key", aws_secret_access_key)
-        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
-        .config("spark.hadoop.fs.s3a.region", "us-east-1")
-        .config("spark.hadoop.fs.s3a.path.style.access", "true")
-        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-        # Shuffling-specific configurations
-        .config("spark.sql.adaptive.enabled", "true")
-        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
-        .config("spark.sql.adaptive.skewJoin.enabled", "true")
-        .config("spark.sql.adaptive.localShuffleReader.enabled", "true")
-        .config("spark.sql.shuffle.partitions", "200")  # Default shuffle partitions
-        .config("spark.sql.adaptive.advisoryPartitionSizeInBytes", "128m")
-        .config("spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes", "256m")
-        .config("spark.sql.adaptive.skewJoin.skewedPartitionFactor", "5")
-        # Monitoring configurations
-        .config("spark.eventLog.enabled", "true")
-        .config("spark.eventLog.dir", "file:///opt/bitnami/spark/logs")
-        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
-        .master(
-            "spark://spark-master:7077"
-        )  # Use Spark cluster instead of Spark Connect
-        .getOrCreate()
-    )
+#     spark = (
+#         SparkSession.builder.appName(app_name)
+#         .config("spark.sql.streaming.schemaInference", "true")
+#         .config(
+#             "spark.sql.extensions",
+#             "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+#         )
+#         .config("spark.sql.catalog.iceberg", "org.apache.iceberg.spark.SparkCatalog")
+#         .config("spark.sql.defaultCatalog", "iceberg")
+#         .config("spark.sql.catalog.iceberg.type", "rest")
+#         .config("spark.sql.catalog.iceberg.uri", "http://spark-rest:8181")
+#         .config("spark.sql.catalog.iceberg.s3.endpoint", "http://minio:9000")
+#         .config("spark.sql.catalog.iceberg.warehouse", "s3://data/wh")
+#         .config("spark.sql.catalog.iceberg.s3.access-key", aws_access_key_id)
+#         .config("spark.sql.catalog.iceberg.s3.secret-key", aws_secret_access_key)
+#         .config("spark.sql.catalog.iceberg.s3.region", "us-east-1")
+#         .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+#         .config("spark.hadoop.fs.s3a.access.key", aws_access_key_id)
+#         .config("spark.hadoop.fs.s3a.secret.key", aws_secret_access_key)
+#         .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
+#         .config("spark.hadoop.fs.s3a.region", "us-east-1")
+#         .config("spark.hadoop.fs.s3a.path.style.access", "true")
+#         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
+#         # Shuffling-specific configurations
+#         .config("spark.sql.adaptive.enabled", "true")
+#         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+#         .config("spark.sql.adaptive.skewJoin.enabled", "true")
+#         .config("spark.sql.adaptive.localShuffleReader.enabled", "true")
+#         .config("spark.sql.shuffle.partitions", "200")  # Default shuffle partitions
+#         .config("spark.sql.adaptive.advisoryPartitionSizeInBytes", "128m")
+#         .config("spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes", "256m")
+#         .config("spark.sql.adaptive.skewJoin.skewedPartitionFactor", "5")
+#         # Monitoring configurations
+#         .config("spark.eventLog.enabled", "true")
+#         .config("spark.eventLog.dir", f"file:///opt/bitnami/spark/logs/{app_name}")
+#         .config("spark.sql.execution.arrow.pyspark.enabled", "true")
+#         .master(
+#             "spark://spark-master:7077"
+#         )  # Use Spark cluster instead of Spark Connect
+#         .getOrCreate()
+#     )
 
-    return spark
+#     return spark

@@ -2,3 +2,6 @@
 tmp
 spark-logs
 data
+*.db # sqlite db for iceberg catalog
+**/__pycache__/
+

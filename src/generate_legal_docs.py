@@ -2,16 +2,113 @@
 """
 Script to generate 1000 unstructured legal text documents using SOLI data generator.
 Based on https://github.com/alea-institute/folio-data-generator
+Uses PySpark to save documents to MinIO.
 """
 
 import os
 import random
 from pathlib import Path
 from datetime import datetime
+from typing import List, Dict, Any
 
 # Import SOLI data generator components
 from soli import SOLI
 from soli_data_generator.procedural.template import TemplateFormatter
+
+# Import Spark session utilities
+from utils.session import create_spark_session, SparkVersion, IcebergConfig
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.types import StructType, StructField, StringType, TimestampType
+from pyspark.sql.functions import current_timestamp, lit
+
+# Import shared legal document models
+from models import (
+    LEGAL_DOC_TYPES,
+    VALID_DOCUMENT_TYPES,
+    get_legal_doc_type,
+    get_all_legal_doc_types,
+    is_valid_document_type,
+    get_document_keywords,
+    LEGAL_DOC_TYPES_DICT,
+)
+
+
+def create_legal_documents_schema() -> StructType:
+    """
+    Create Spark schema for legal documents
+
+    Returns:
+        StructType: Schema for legal documents DataFrame
+    """
+    return StructType(
+        [
+            StructField("document_id", StringType(), False),
+            StructField("document_type", StringType(), False),
+            StructField("content", StringType(), False),
+            StructField("keywords", StringType(), False),
+            StructField("filename", StringType(), False),
+            StructField("generated_at", TimestampType(), False),
+        ]
+    )
+
+
+def save_documents_to_minio(
+    spark: SparkSession,
+    documents: List[Dict[str, Any]],
+    output_path: str = "s3://data/docs/legal",
+) -> None:
+    """
+    Save generated documents to MinIO using Spark
+
+    Args:
+        spark: SparkSession instance
+        documents: List of document dictionaries
+        output_path: MinIO path to save documents
+    """
+    # Create DataFrame from documents
+    schema = create_legal_documents_schema()
+    df = spark.createDataFrame(documents, schema)
+
+    # Add timestamp column
+    df = df.withColumn("generated_at", current_timestamp())
+
+    print(f"Saving {len(documents)} documents to MinIO at {output_path}")
+
+    # Write to MinIO as Parquet files
+    df.write.mode("overwrite").parquet(output_path)
+
+    print(f"Successfully saved documents to MinIO")
+
+    # Show sample of saved data
+    print("\nSample of saved documents:")
+    df.show(5, truncate=False)
+
+
+def save_documents_as_text_files(
+    spark: SparkSession,
+    documents: List[Dict[str, Any]],
+    output_path: str = "s3://data/docs/legal/text",
+) -> None:
+    """
+    Save documents as individual text files in MinIO
+
+    Args:
+        spark: SparkSession instance
+        documents: List of document dictionaries
+        output_path: MinIO path to save text files
+    """
+    print(f"Saving {len(documents)} documents as text files to MinIO at {output_path}")
+
+    # Create DataFrame with content and filename
+    text_df = spark.createDataFrame(
+        [(doc["content"], doc["filename"]) for doc in documents],
+        ["content", "filename"],
+    )
+
+    # Write each document as a separate text file
+    text_df.write.mode("overwrite").option("header", "false").csv(output_path)
+
+    print(f"Successfully saved text files to MinIO")
 
 
 def generate_fallback_content(i, doc_type):
@@ -389,16 +486,14 @@ def get_document_generator(doc_type_name):
     return generators.get(doc_type_name, generate_contract_document)
 
 
-def generate_legal_documents(num_docs, output_dir):
+def generate_legal_documents_with_spark(num_docs, spark_session=None):
     """
-    Generate unstructured legal text documents using SOLI data generator.
+    Generate unstructured legal text documents using SOLI data generator and save to MinIO via Spark.
 
     Args:
         num_docs (int): Number of documents to generate
-        output_dir (str): Output directory for the documents
+        spark_session: Optional SparkSession instance (will create one if not provided)
     """
-    # Create output directory if it doesn't exist
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # Initialize SOLI components
     try:
@@ -414,59 +509,16 @@ def generate_legal_documents(num_docs, output_dir):
         print("Falling back to basic content generation.")
         formatter = None
 
-    # Legal document types and their characteristics
-    legal_doc_types = [
-        {
-            "name": "contract",
-            "keywords": [
-                "agreement",
-                "terms",
-                "conditions",
-                "parties",
-                "obligations",
-                "liability",
-            ],
-        },
-        {
-            "name": "legal_memo",
-            "keywords": [
-                "analysis",
-                "precedent",
-                "jurisdiction",
-                "statute",
-                "interpretation",
-            ],
-        },
-        {
-            "name": "court_filing",
-            "keywords": ["petition", "motion", "affidavit", "evidence", "testimony"],
-        },
-        {
-            "name": "policy_document",
-            "keywords": [
-                "policy",
-                "procedure",
-                "compliance",
-                "regulations",
-                "guidelines",
-            ],
-        },
-        {
-            "name": "legal_opinion",
-            "keywords": [
-                "opinion",
-                "advice",
-                "counsel",
-                "legal_analysis",
-                "recommendation",
-            ],
-        },
-    ]
+    # Use shared legal document types from legal_document_models.py
+    legal_doc_types = get_all_legal_doc_types()
 
-    print(f"Generating {num_docs} legal documents in {output_dir}...")
+    print(f"Generating {num_docs} legal documents and saving to MinIO...")
 
     # Track document generation statistics
     doc_type_counts = {doc_type["name"]: 0 for doc_type in legal_doc_types}
+
+    # List to store all generated documents
+    documents = []
 
     for i in range(num_docs):
         # Randomly select document type
@@ -482,11 +534,18 @@ def generate_legal_documents(num_docs, output_dir):
 
             # Create filename
             filename = f"legal_doc_{i+1:04d}_{doc_type['name']}.txt"
-            filepath = os.path.join(output_dir, filename)
 
-            # Write content to file
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(content)
+            # Create document record
+            document = {
+                "document_id": f"doc_{i+1:04d}",
+                "document_type": doc_type["name"],
+                "content": content,
+                "keywords": ", ".join(doc_type["keywords"]),
+                "filename": filename,
+                "generated_at": datetime.now(),
+            }
+
+            documents.append(document)
 
             if (i + 1) % 100 == 0:
                 print(f"Generated {i + 1} documents...")
@@ -496,10 +555,42 @@ def generate_legal_documents(num_docs, output_dir):
             fallback_content = generate_fallback_content(i, doc_type)
 
             filename = f"legal_doc_{i+1:04d}_{doc_type['name']}.txt"
-            filepath = os.path.join(output_dir, filename)
 
+            document = {
+                "document_id": f"doc_{i+1:04d}",
+                "document_type": doc_type["name"],
+                "content": fallback_content,
+                "keywords": ", ".join(doc_type["keywords"]),
+                "filename": filename,
+                "generated_at": datetime.now(),
+            }
+
+            documents.append(document)
+
+    # Save documents to MinIO using Spark
+    try:
+        # Save as structured data (Parquet)
+        save_documents_to_minio(
+            spark_session, documents, "s3://data/docs/legal/parquet"
+        )
+
+        # Save as text files
+        save_documents_as_text_files(
+            spark_session, documents, "s3://data/docs/legal/text"
+        )
+
+    except Exception as e:
+        print(f"Error saving to MinIO: {e}")
+        # Fallback: save locally
+        local_output_dir = "data/docs/legal"
+        Path(local_output_dir).mkdir(parents=True, exist_ok=True)
+
+        for doc in documents:
+            filepath = os.path.join(local_output_dir, doc["filename"])
             with open(filepath, "w", encoding="utf-8") as f:
-                f.write(fallback_content)
+                f.write(doc["content"])
+
+        print(f"Saved documents locally to {local_output_dir}")
 
     # Print generation statistics
     print(f"\n=== Generation Complete ===")
@@ -508,68 +599,23 @@ def generate_legal_documents(num_docs, output_dir):
     for doc_type, count in doc_type_counts.items():
         percentage = (count / num_docs) * 100
         print(f"  {doc_type}: {count} ({percentage:.1f}%)")
-    print(f"Output directory: {output_dir}")
+    print(f"Documents saved to MinIO: s3://data/docs/legal/")
 
 
-def generate_specific_document_type(
-    doc_type_name, num_docs=100, output_dir="data/docs/legal"
+def generate_specific_document_type_with_spark(
+    doc_type_name, num_docs=100, spark_session=None
 ):
     """
-    Generate documents of a specific type only
+    Generate documents of a specific type only and save to MinIO via Spark
 
     Args:
         doc_type_name (str): Name of the document type to generate
         num_docs (int): Number of documents to generate
-        output_dir (str): Output directory for the documents
+        spark_session: Optional SparkSession instance (will create one if not provided)
     """
-    # Legal document types and their characteristics
-    legal_doc_types = {
-        "contract": {
-            "name": "contract",
-            "keywords": [
-                "agreement",
-                "terms",
-                "conditions",
-                "parties",
-                "obligations",
-                "liability",
-            ],
-        },
-        "legal_memo": {
-            "name": "legal_memo",
-            "keywords": [
-                "analysis",
-                "precedent",
-                "jurisdiction",
-                "statute",
-                "interpretation",
-            ],
-        },
-        "court_filing": {
-            "name": "court_filing",
-            "keywords": ["petition", "motion", "affidavit", "evidence", "testimony"],
-        },
-        "policy_document": {
-            "name": "policy_document",
-            "keywords": [
-                "policy",
-                "procedure",
-                "compliance",
-                "regulations",
-                "guidelines",
-            ],
-        },
-        "legal_opinion": {
-            "name": "legal_opinion",
-            "keywords": [
-                "opinion",
-                "advice",
-                "counsel",
-                "legal_analysis",
-                "recommendation",
-            ],
-        },
-    }
+
+    # Use shared legal document types from legal_document_models.py
+    legal_doc_types = LEGAL_DOC_TYPES_DICT
 
     if doc_type_name not in legal_doc_types:
         print(f"Error: Unknown document type '{doc_type_name}'")
@@ -577,9 +623,6 @@ def generate_specific_document_type(
         return
 
     doc_type = legal_doc_types[doc_type_name]
-
-    # Create output directory if it doesn't exist
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # Initialize SOLI components
     try:
@@ -595,7 +638,9 @@ def generate_specific_document_type(
         print("Falling back to basic content generation.")
         formatter = None
 
-    print(f"Generating {num_docs} {doc_type_name} documents in {output_dir}...")
+    print(f"Generating {num_docs} {doc_type_name} documents and saving to MinIO...")
+
+    documents = []
 
     for i in range(num_docs):
         try:
@@ -607,11 +652,18 @@ def generate_specific_document_type(
 
             # Create filename
             filename = f"{doc_type_name}_doc_{i+1:04d}.txt"
-            filepath = os.path.join(output_dir, filename)
 
-            # Write content to file
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(content)
+            # Create document record
+            document = {
+                "document_id": f"{doc_type_name}_{i+1:04d}",
+                "document_type": doc_type["name"],
+                "content": content,
+                "keywords": ", ".join(doc_type["keywords"]),
+                "filename": filename,
+                "generated_at": datetime.now(),
+            }
+
+            documents.append(document)
 
             if (i + 1) % 50 == 0:
                 print(f"Generated {i + 1} {doc_type_name} documents...")
@@ -621,27 +673,69 @@ def generate_specific_document_type(
             fallback_content = generate_fallback_content(i, doc_type)
 
             filename = f"{doc_type_name}_doc_{i+1:04d}.txt"
-            filepath = os.path.join(output_dir, filename)
 
+            document = {
+                "document_id": f"{doc_type_name}_{i+1:04d}",
+                "document_type": doc_type["name"],
+                "content": fallback_content,
+                "keywords": ", ".join(doc_type["keywords"]),
+                "filename": filename,
+                "generated_at": datetime.now(),
+            }
+
+            documents.append(document)
+
+    # Save documents to MinIO using Spark
+    try:
+        # Save as structured data (Parquet)
+        save_documents_to_minio(
+            spark_session, documents, f"s3://data/docs/legal/{doc_type_name}/parquet"
+        )
+
+        # Save as text files
+        save_documents_as_text_files(
+            spark_session, documents, f"s3://data/docs/legal/{doc_type_name}/text"
+        )
+
+    except Exception as e:
+        print(f"Error saving to MinIO: {e}")
+        # Fallback: save locally
+        local_output_dir = f"data/docs/legal/{doc_type_name}"
+        Path(local_output_dir).mkdir(parents=True, exist_ok=True)
+
+        for doc in documents:
+            filepath = os.path.join(local_output_dir, doc["filename"])
             with open(filepath, "w", encoding="utf-8") as f:
-                f.write(fallback_content)
+                f.write(doc["content"])
+
+        print(f"Saved documents locally to {local_output_dir}")
 
     print(
-        f"Successfully generated {num_docs} {doc_type_name} documents in {output_dir}"
+        f"Successfully generated and saved {num_docs} {doc_type_name} documents to MinIO"
     )
 
 
-def main():
-    """Main function to generate legal documents"""
-    output_dir = "data/docs/legal"
-    num_docs = 1000
+def main(num_docs: int = 1000):
+    """Main function to generate legal documents and save to MinIO"""
 
-    # Generate all document types randomly
-    generate_legal_documents(num_docs=num_docs, output_dir=output_dir)
+    # Create Spark session
+    spark = create_spark_session(
+        spark_version=SparkVersion.SPARK_3_5,
+        app_name=Path(__file__).stem,
+        iceberg_config=IcebergConfig(),
+    )
 
-    # Option: Generate specific document type only
-    # Uncomment the line below to generate only contracts
-    # generate_specific_document_type("contract", num_docs=100, output_dir="data/docs/contracts")
+    try:
+        # Generate all document types randomly
+        generate_legal_documents_with_spark(num_docs=num_docs, spark_session=spark)
+
+        # Option: Generate specific document type only
+        # Uncomment the line below to generate only contracts
+        # generate_specific_document_type_with_spark("contract", num_docs=100, spark_session=spark)
+
+    finally:
+        # Stop Spark session
+        spark.stop()
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "pyiceberg[duckdb,pyarrow]>=0.9.0",
+    "pyiceberg[duckdb,pyarrow,sql-sqlite]>=0.9.0",
     "pyspark[connect,sql]>=4.0.0",
     "soli-data-generator>=0.1.0",
     "sqlalchemy>=2.0.41",
@@ -31,4 +31,9 @@ markers = [
     "spark_connect: marks tests that require Spark Connect",
     "pyspark: marks tests that use PySpark",
     "iceberg: marks tests that require Iceberg"
+]
+
+[dependency-groups]
+transform = [
+    "sqlmesh>=0.196.3",
 ]

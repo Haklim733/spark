@@ -19,8 +19,8 @@ class IcebergConfig:
 
     def __init__(
         self,
-        catalog_type: str = "rest",
-        catalog_uri: str = "http://spark-rest:8181",
+        catalog_type: str = "hadoop",
+        catalog_uri: str = "jdbc:sqlite:file:/data/warehouse/iceberg_catalog.db",
         warehouse: str = "s3://data/wh",
         s3_endpoint: str = "http://minio:9000",
         s3_region: str = "us-east-1",
@@ -39,25 +39,60 @@ class IcebergConfig:
 
     def get_spark_configs(self) -> Dict[str, str]:
         """Get Spark configuration dictionary for Iceberg"""
-        return {
+        configs = {
             "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
             "spark.sql.catalog.iceberg": "org.apache.iceberg.spark.SparkCatalog",
             "spark.sql.defaultCatalog": "iceberg",
-            "spark.sql.catalog.iceberg.type": self.catalog_type,
-            "spark.sql.catalog.iceberg.uri": self.catalog_uri,
-            "spark.sql.catalog.iceberg.s3.endpoint": self.s3_endpoint,
             "spark.sql.catalog.iceberg.warehouse": self.warehouse,
-            "spark.sql.catalog.iceberg.s3.access-key": self.s3_access_key,
-            "spark.sql.catalog.iceberg.s3.secret-key": self.s3_secret_key,
-            "spark.sql.catalog.iceberg.s3.region": self.s3_region,
-            "spark.hadoop.fs.s3.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
-            "spark.hadoop.fs.s3a.access.key": self.s3_access_key,
-            "spark.hadoop.fs.s3a.secret.key": self.s3_secret_key,
-            "spark.hadoop.fs.s3a.endpoint": self.s3_endpoint,
-            "spark.hadoop.fs.s3a.region": self.s3_region,
-            "spark.hadoop.fs.s3a.path.style.access": "true",
-            "spark.hadoop.fs.s3a.connection.ssl.enabled": "false",
+            "spark.sql.execution.metrics.enabled": "true",
+            "spark.sql.execution.metrics.persist": "true",
         }
+
+        if self.catalog_type == "hadoop":
+            configs.update(
+                {
+                    "spark.sql.catalog.iceberg.type": "hadoop",
+                }
+            )
+        elif self.catalog_type == "jdbc":
+            configs.update(
+                {
+                    "spark.sql.catalog.iceberg.catalog-impl": "org.apache.iceberg.jdbc.JdbcCatalog",
+                    "spark.sql.catalog.iceberg.uri": self.catalog_uri,
+                }
+            )
+        elif self.catalog_type == "rest":
+            configs.update(
+                {
+                    "spark.sql.catalog.iceberg.type": "rest",
+                    "spark.sql.catalog.iceberg.uri": self.catalog_uri,
+                    "spark.sql.catalog.iceberg.s3.endpoint": self.s3_endpoint,
+                    "spark.sql.catalog.iceberg.s3.access-key": self.s3_access_key,
+                    "spark.sql.catalog.iceberg.s3.secret-key": self.s3_secret_key,
+                    "spark.sql.catalog.iceberg.s3.region": self.s3_region,
+                }
+            )
+
+        # S3 configuration for data storage
+        configs.update(
+            {
+                "spark.hadoop.fs.s3.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
+                "spark.hadoop.fs.s3a.access.key": self.s3_access_key,
+                "spark.hadoop.fs.s3a.secret.key": self.s3_secret_key,
+                "spark.hadoop.fs.s3a.endpoint": self.s3_endpoint,
+                "spark.hadoop.fs.s3a.region": self.s3_region,
+                "spark.hadoop.fs.s3a.path.style.access": "true",
+                "spark.hadoop.fs.s3a.connection.ssl.enabled": "false",
+                # Enable S3A metrics to suppress warning and collect useful metrics
+                "spark.hadoop.fs.s3a.metrics.enabled": "true",
+                "spark.hadoop.fs.s3a.metrics.reporting.interval": "60",
+                # Enable Spark SQL metrics
+                "spark.sql.execution.metrics.enabled": "true",
+                "spark.sql.execution.metrics.persist": "true",
+            }
+        )
+
+        return configs
 
 
 def create_spark_session(
@@ -78,8 +113,8 @@ def create_spark_session(
     Returns:
         SparkSession: Configured Spark session
     """
-    # Create event log directory if it doesn't exist
-    log_dir = f"/opt/bitnami/spark/logs/{app_name}"
+    # Create event log directory in app folder
+    log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
     os.makedirs(log_dir, exist_ok=True)
 
     # Default performance configurations
@@ -93,8 +128,10 @@ def create_spark_session(
         "spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes": "256m",
         "spark.sql.adaptive.skewJoin.skewedPartitionFactor": "5",
         "spark.eventLog.enabled": "true",
-        "spark.eventLog.dir": f"file:///opt/bitnami/spark/logs/{app_name}",
+        "spark.eventLog.dir": f"file:///opt/bitnami/spark/logs/app/{app_name}",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
+        "spark.sql.execution.arrow.pyspark.fallback.enabled": "true",
+        "spark.sql.execution.arrow.maxRecordsPerBatch": "10000",
     }
 
     # Merge configurations: additional_configs override defaults
@@ -112,8 +149,8 @@ def _create_spark_connect_session(
     app_name: str, iceberg_config: Optional[IcebergConfig] = None, **additional_configs
 ) -> SparkSession:
     """Create a Spark Connect session (4.0+)"""
-    # Create event log directory if it doesn't exist
-    log_dir = f"/opt/bitnami/spark/logs/{app_name}"
+    # Create event log directory in app folder
+    log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
     os.makedirs(log_dir, exist_ok=True)
 
     builder = SparkSession.builder.appName(app_name).remote("sc://localhost:15002")
@@ -134,8 +171,8 @@ def _create_pyspark_session(
     app_name: str, iceberg_config: Optional[IcebergConfig] = None, **additional_configs
 ) -> SparkSession:
     """Create a regular PySpark session (3.5)"""
-    # Create event log directory if it doesn't exist
-    log_dir = f"/opt/bitnami/spark/logs/{app_name}"
+    # Create event log directory in app folder
+    log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
     os.makedirs(log_dir, exist_ok=True)
 
     builder = SparkSession.builder.appName(app_name)
@@ -214,3 +251,11 @@ def _create_pyspark_session(
 #     )
 
 #     return spark
+
+
+iceberg_config = IcebergConfig(
+    catalog_type="rest",
+    catalog_uri="http://spark-rest:8181",
+    warehouse="s3://data/wh",
+    s3_endpoint="http://minio:9000",
+)

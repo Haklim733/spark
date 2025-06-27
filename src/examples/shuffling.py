@@ -16,7 +16,8 @@ from pyspark.sql.types import (
 )
 import time
 from datetime import datetime
-from utils import MetricsTracker, create_spark_session
+from utils.session import create_spark_session, SparkVersion
+from utils.logger import MetricsTracker
 
 # Global metrics tracker instance (will be initialized in main)
 metrics_tracker = None
@@ -949,7 +950,9 @@ def main():
 
     try:
         # Create Spark session
-        spark = create_spark_session()
+        spark = create_spark_session(
+            spark_version=SparkVersion.SPARK_3_5, app_name="shuffling_demo"
+        )
 
         # Set log level for regular PySpark
         spark.sparkContext.setLogLevel("INFO")

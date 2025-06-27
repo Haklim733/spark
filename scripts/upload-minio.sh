@@ -12,3 +12,6 @@ DATA_DIR="data"
 for file in data/*.parquet; do
     mc cp "$file" spark-minio/data/
 done
+for file in data/docs/legal/*.txt; do
+    mc cp "$file" spark-minio/data/docs/legal/
+done

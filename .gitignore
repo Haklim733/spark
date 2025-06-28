@@ -4,4 +4,4 @@ spark-logs
 data
 *.db # sqlite db for iceberg catalog
 **/__pycache__/
-
+*.pyc

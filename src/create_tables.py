@@ -5,7 +5,7 @@ Executes SQL DDL statements to create Iceberg tables
 """
 
 from pathlib import Path
-from utils.session import create_spark_session, SparkVersion, IcebergConfig
+from utils.session import create_spark_session, SparkVersion
 
 
 def execute_ddl_file(ddl_file_path, spark):
@@ -56,15 +56,23 @@ def extract_namespaces_from_ddl(ddl_dir):
             with open(ddl_file, "r") as f:
                 content = f.read()
 
+            print(f"DEBUG: Processing file: {ddl_file}")
+            print(f"DEBUG: File content preview: {content[:200]}...")
+
             # Look for CREATE TABLE statements with namespace.table format
             import re
 
-            matches = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)\.", content)
+            # Handle both CREATE TABLE IF NOT EXISTS and CREATE OR REPLACE TABLE
+            matches = re.findall(
+                r"CREATE (?:TABLE IF NOT EXISTS|OR REPLACE TABLE) (\w+)\.", content
+            )
+            print(f"DEBUG: Found matches: {matches}")
             namespaces.update(matches)
 
         except Exception as e:
             print(f"⚠️  Error reading {ddl_file}: {e}")
 
+    print(f"DEBUG: Final namespaces found: {list(namespaces)}")
     return list(namespaces)
 
 
@@ -80,7 +88,10 @@ def extract_tables_from_ddl(ddl_dir):
             # Look for CREATE TABLE statements with namespace.table format
             import re
 
-            matches = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)\.(\w+)", content)
+            # Handle both CREATE TABLE IF NOT EXISTS and CREATE OR REPLACE TABLE
+            matches = re.findall(
+                r"CREATE (?:TABLE IF NOT EXISTS|OR REPLACE TABLE) (\w+)\.(\w+)", content
+            )
 
             for namespace, table_name in matches:
                 tables.append((namespace, table_name))
@@ -110,7 +121,7 @@ def create_error_table(spark, namespace, table_name):
         metadata MAP<STRING, STRING>
     )
     USING iceberg
-    PARTITIONED BY (error_type, months(quarantined_at))
+    PARTITIONED BY (error_type, month(quarantined_at))
     TBLPROPERTIES (
         'write.format.default' = 'parquet',
         'write.parquet.compression-codec' = 'zstd',
@@ -151,7 +162,7 @@ def create_specific_error_table_for_legal_documents(spark):
         field_value STRING   -- The problematic value
     )
     USING iceberg
-    PARTITIONED BY (error_type, months(quarantined_at))
+    PARTITIONED BY (error_type, month(quarantined_at))
     TBLPROPERTIES (
         'write.format.default' = 'parquet',
         'write.parquet.compression-codec' = 'zstd',
@@ -172,14 +183,11 @@ def create_specific_error_table_for_legal_documents(spark):
 def main():
     """Main function to execute DDL statements"""
     app_name = Path(__file__).stem
-    # Use default Iceberg configuration
-    iceberg_config = IcebergConfig()
 
     # Create Spark session with Iceberg
     spark = create_spark_session(
         spark_version=SparkVersion.SPARK_3_5,
         app_name=app_name,
-        iceberg_config=iceberg_config,
     )
 
     # DDL files directory

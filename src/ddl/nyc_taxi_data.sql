@@ -1,7 +1,7 @@
 -- NYC Taxi Data Table DDL
 -- This table stores NYC taxi trip data
 
-CREATE TABLE IF NOT EXISTS nyc_taxi_data.yellow_tripdata (
+CREATE OR REPLACE TABLE nyc_taxi_data.yellow_tripdata (
     VendorID BIGINT,
     tpep_pickup_datetime TIMESTAMP,
     tpep_dropoff_datetime TIMESTAMP,
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS nyc_taxi_data.yellow_tripdata (
     airport_fee DOUBLE
 )
 USING iceberg
-PARTITIONED BY (months(tpep_pickup_datetime))
+PARTITIONED BY (month(tpep_pickup_datetime))
 TBLPROPERTIES (
     'write.format.default' = 'parquet',
     'write.parquet.compression-codec' = 'zstd',

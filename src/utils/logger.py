@@ -1,12 +1,13 @@
 import atexit
+from contextlib import contextmanager
 import json
 import logging
 import queue
 import threading
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from pyspark.sql import SparkSession
-
+import functools
 
 class HybridLogger:
     """
@@ -292,14 +293,13 @@ class HybridLogger:
                 self.log_thread.join(timeout=5)
 
 
-# Global metrics tracking with hybrid logging
 class MetricsTracker:
     def __init__(self, spark: SparkSession):
         self.metrics = {}
         self.current_job_group = None
         self.current_operation = None
         # Initialize hybrid logger
-        self.logger = HybridLogger(spark, "ShufflingMetrics", enable_async=True)
+        self.logger = HybridLogger(spark, "MetricsTracker", enable_async=True)
 
     def start_operation(self, job_group: str, operation: str):
         """Start tracking metrics for a new operation"""
@@ -477,3 +477,137 @@ class MetricsTracker:
     def shutdown(self):
         """Shutdown the hybrid logger"""
         self.logger.shutdown()
+
+
+def custom_logger(operation_name=None, logger: Optional[HybridLogger] = None, metrics_tracker: Optional[MetricsTracker] = None, require_spark: bool = False):
+    """
+    Decorator for operations that automatically logs execution details and metrics.
+    
+    Args:
+        operation_name: Optional custom name for the operation. If not provided,
+                      the function name will be used.
+        logger: Optional logger instance (defaults to creating a new HybridLogger)
+        metrics_tracker: Optional metrics tracker instance (defaults to creating a new MetricsTracker)
+        require_spark: If True, raises an error if no SparkSession is found.
+                     If False (default), continues without Spark-specific features.
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            # Check if first argument is 'self' (instance method)
+            is_instance_method = args and hasattr(args[0], 'spark')
+            
+            # Get or create logger and metrics_tracker instances
+            spark = None
+            
+            if is_instance_method:
+                self = args[0]
+                spark = getattr(self, 'spark', None)
+                logger_instance = getattr(self, 'logger', None) or logger
+                mt_instance = getattr(self, 'metrics_tracker', None) or metrics_tracker
+            else:
+                # Try to get spark from kwargs or args
+                spark = kwargs.get('spark')
+                if spark is None:
+                    spark = next((arg for arg in args if hasattr(arg, 'sparkContext')), None)
+                
+                logger_instance = logger
+                mt_instance = metrics_tracker
+
+            # If spark is required but not found, try to get the active session
+            if require_spark and spark is None:
+                try:
+                    from pyspark.sql import SparkSession
+                    spark = SparkSession.getActiveSession()
+                    if spark is None:
+                        raise RuntimeError("No active SparkSession found and no spark instance provided")
+                except Exception as e:
+                    raise RuntimeError(f"Failed to get active SparkSession: {str(e)}")
+
+            # Initialize logger if not provided
+            logger_instance = logger_instance or HybridLogger(spark, func.__module__ if spark else None)
+            mt_instance = mt_instance or (MetricsTracker(spark) if spark else None)
+            
+            # Set logger and metrics_tracker on instance if this is an instance method
+            if is_instance_method:
+                if not hasattr(self, 'logger'):
+                    setattr(self, 'logger', logger_instance)
+                if not hasattr(self, 'metrics_tracker') and mt_instance is not None:
+                    setattr(self, 'metrics_tracker', mt_instance)
+            
+            # Use provided operation name or function name
+            op_name = operation_name or func.__name__
+            
+            # Log operation start
+            logger_instance.log_performance("operation_start", {"operation": op_name})
+            if mt_instance and spark is not None:
+                mt_instance.start_operation("default_job_group", op_name)
+            
+            start_time = time.time()
+            result_count = 0
+            
+            try:
+                # Execute the wrapped function
+                result = func(*args, **kwargs)
+                
+                # Get result count if it's a DataFrame and we have a SparkSession
+                if hasattr(result, 'count') and spark is not None:
+                    try:
+                        result_count = result.count()
+                    except Exception as e:
+                        logger_instance.log_error(e, {"context": f"Error counting results for {op_name}"})
+                
+                execution_time = time.time() - start_time
+                
+                # Log successful completion
+                logger_instance.log_performance("operation_complete", {
+                    "operation": op_name,
+                    "execution_time_seconds": round(execution_time, 4),
+                    "result_count": result_count,
+                    "status": "success"
+                })
+                
+                # Update metrics if we have a metrics tracker and spark session
+                if mt_instance and spark is not None:
+                    mt_instance.end_operation(
+                        spark,
+                        execution_time=execution_time,
+                        result_count=result_count
+                    )
+                
+                return result
+                
+            except Exception as e:
+                execution_time = time.time() - start_time
+                error_info = {
+                    "operation": op_name,
+                    "execution_time_seconds": round(execution_time, 4),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "status": "failed"
+                }
+                
+                # Log error
+                logger_instance.log_error(e, {"operation": op_name})
+                logger_instance.log_performance("operation_failed", error_info)
+                
+                # Update metrics with failure if we have a metrics tracker and spark session
+                if mt_instance and spark is not None:
+                    mt_instance.end_operation(
+                        spark,
+                        execution_time=execution_time,
+                        result_count=0
+                    )
+                
+                raise
+            
+        return wrapper
+    
+    # Handle both @custom_logger and @custom_logger() syntax
+    if callable(operation_name):
+        # Called as @custom_logger without parameters
+        func = operation_name
+        return decorator(func)
+    else:
+        # Called as @custom_logger() or with parameters
+        return decorator

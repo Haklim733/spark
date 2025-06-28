@@ -11,6 +11,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 from dataclasses import dataclass
+import time
 from typing import List, Optional, Dict, Any
 
 from pyspark.sql import SparkSession
@@ -23,29 +24,27 @@ from pyspark.sql.types import (
     MapType,
     BooleanType,
 )
-from soli import SOLI
 from soli_data_generator.procedural.template import TemplateFormatter
-from utils.session import create_spark_session, SparkVersion, IcebergConfig
+from utils.logger import custom_logger
+from utils.session import (
+    create_spark_session,
+    SparkVersion,
+    IcebergConfig,
+    S3FileSystemConfig,
+)
 
 # Import functions from generate_legal_docs.py
 from generate_legal_docs import (
     generate_fallback_content,
     get_document_generator,
-    generate_legal_documents_with_spark,
-    generate_specific_document_type_with_spark,
 )
 
 # Import shared legal document models
-from legal_document_models import (
+from models import (
     LEGAL_DOC_TYPES,
     VALID_DOCUMENT_TYPES,
-    get_legal_doc_type,
     get_all_legal_doc_types,
-    is_valid_document_type,
-    get_document_keywords,
 )
-
-import time
 
 
 def is_minio_path(path_str: str) -> bool:
@@ -407,11 +406,6 @@ def insert_legal_documents_from_generation(spark, num_docs=1000):
     """Insert legal documents from generation - ELT operation only"""
     print(f"Generating and inserting {num_docs} legal documents...")
 
-    # Create quarantine table
-    if not create_quarantine_table(spark):
-        print("❌ Failed to create quarantine table. Exiting.")
-        return False
-
     # Generate documents
     documents = generate_legal_documents_for_validation(spark, num_docs)
     if not documents:
@@ -557,11 +551,6 @@ def generate_legal_documents_for_validation(spark, num_docs):
 def insert_legal_documents_from_files(spark, docs_dir="data/docs/legal"):
     """Insert legal documents from existing files - ELT operation only"""
     print(f"Inserting legal documents from: {docs_dir}")
-
-    # Create quarantine table
-    if not create_quarantine_table(spark):
-        print("❌ Failed to create quarantine table. Exiting.")
-        return False
 
     # Check if docs directory exists
     if not os.path.exists(docs_dir):
@@ -780,11 +769,6 @@ def insert_files(
     """
     print(f"Inserting files from: {docs_dir} into {table_name}")
     print(f"Using {'parallel' if use_parallel else 'original'} approach")
-
-    # Create quarantine table if it doesn't exist
-    if not create_quarantine_table(spark):
-        print("❌ Failed to create quarantine table. Exiting.")
-        return False
 
     # Check if this is a MinIO path
     is_minio = is_minio_path(docs_dir)
@@ -1620,6 +1604,14 @@ def main():
         help="Number of partitions for parallel processing",
         default=None,
     )
+    parser.add_argument(
+        "--table-op",
+        type=str,
+        help="table operation",
+        required=False,
+        default="insert",
+        choices=["insert", "append"],
+    )
 
     args = parser.parse_args()
 
@@ -1659,41 +1651,52 @@ def main():
     print(f"   - Reason: {approach_reason}")
     print(f"   - Partitions: {partitions}")
     print(f"   - Partition reason: {partition_reason}")
+    print(f"   - Table operation: {args.table_op}")
 
-    # Create Spark session
-    spark = create_spark_session()
+    app_name = Path(__file__).stem
+    spark = create_spark_session(
+        spark_version=SparkVersion.SPARK_3_5,
+        app_name=app_name,
+        iceberg_config=IcebergConfig(
+            s3_config=S3FileSystemConfig(),
+        ),
+    )
+
     if not spark:
         print("❌ Failed to create Spark session. Exiting.")
         return False
 
     print("✅ Spark session created successfully")
 
+    if args.table_op == "insert":
+        spark.sql(f"TRUNCATE TABLE {table_name}")
+
     # Insert data using the unified function with optimized settings
     print(f"\n📁 Inserting data into {table_name}...")
 
-    success = insert_files(
-        spark=spark,
-        docs_dir=file_dir,
-        table_name=table_name,
-        use_parallel=use_parallel,
-        num_partitions=partitions,
-    )
+    @custom_logger(__name__, require_spark=True)
+    def run_etl(spark=spark):
+        return insert_files(
+            spark=spark,
+            docs_dir=file_dir,
+            table_name=table_name,
+            use_parallel=use_parallel,
+            num_partitions=partitions,
+        )
 
-    if success:
-        print(f"✅ Files inserted successfully into {table_name}")
+    run_etl()
 
-        # Show final statistics
-        try:
-            count_result = spark.sql(f"SELECT COUNT(*) as count FROM {table_name}")
-            final_count = count_result.collect()[0]["count"]
-            print(f"📊 Final table count: {final_count:,} records")
-        except Exception as e:
-            print(f"⚠️  Could not get final count: {e}")
+    try:
+        count_result = spark.sql(f"SELECT COUNT(*) as count FROM {table_name}")
+        final_count = count_result.collect()[0]["count"]
+        print(f"📊 Final table count: {final_count:,} records")
+    except Exception as e:
+        print(f"⚠️  Could not get final count: {e}")
     else:
         print(f"❌ Failed to insert files into {table_name}")
 
     print("\n🎉 Data insertion completed!")
-    return success
+    print(spark.job_id)
 
 
 if __name__ == "__main__":

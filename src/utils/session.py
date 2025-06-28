@@ -14,28 +14,57 @@ class SparkVersion(Enum):
     SPARK_4_0 = "spark_4_0"  # Regular PySpark (4.0)
 
 
+class S3FileSystemConfig:
+    """Configuration class for S3 Filesystem settings"""
+
+    def __init__(
+        self,
+        endpoint: str = "http://minio:9000",
+        region: str = "us-east-1",
+        access_key: Optional[str] = None,
+        secret_key: Optional[str] = None,
+        path_style_access: bool = True,
+        ssl_enabled: bool = False,
+    ):
+        self.endpoint = endpoint
+        self.region = region
+        self.access_key = access_key or os.getenv("AWS_ACCESS_KEY_ID", "admin")
+        self.secret_key = secret_key or os.getenv("AWS_SECRET_ACCESS_KEY", "password")
+        self.path_style_access = path_style_access
+        self.ssl_enabled = ssl_enabled
+
+    def get_spark_configs(self) -> Dict[str, str]:
+        """Get Spark configuration dictionary for S3 Filesystem"""
+        return {
+            "spark.hadoop.fs.s3.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
+            "spark.hadoop.fs.s3a.access.key": self.access_key,
+            "spark.hadoop.fs.s3a.secret.key": self.secret_key,
+            "spark.hadoop.fs.s3a.endpoint": self.endpoint,
+            "spark.hadoop.fs.s3a.region": self.region,
+            "spark.hadoop.fs.s3a.path.style.access": str(
+                self.path_style_access
+            ).lower(),
+            "spark.hadoop.fs.s3a.connection.ssl.enabled": str(self.ssl_enabled).lower(),
+            # Enable S3A metrics to suppress warning and collect useful metrics
+            "spark.hadoop.fs.s3a.metrics.enabled": "true",
+            "spark.hadoop.fs.s3a.metrics.reporting.interval": "60",
+        }
+
+
 class IcebergConfig:
     """Configuration class for Iceberg settings"""
 
     def __init__(
         self,
+        s3_config: S3FileSystemConfig,
         catalog_type: str = "hadoop",
         catalog_uri: str = "jdbc:sqlite:file:/data/warehouse/iceberg_catalog.db",
-        warehouse: str = "s3://data/wh",
-        s3_endpoint: str = "http://minio:9000",
-        s3_region: str = "us-east-1",
-        s3_access_key: Optional[str] = None,
-        s3_secret_key: Optional[str] = None,
+        warehouse: str = "s3://data/warehouse",
     ):
+        self.s3_config = s3_config
         self.catalog_type = catalog_type
         self.catalog_uri = catalog_uri
         self.warehouse = warehouse
-        self.s3_endpoint = s3_endpoint
-        self.s3_region = s3_region
-        self.s3_access_key = s3_access_key or os.getenv("AWS_ACCESS_KEY_ID", "admin")
-        self.s3_secret_key = s3_secret_key or os.getenv(
-            "AWS_SECRET_ACCESS_KEY", "password"
-        )
 
     def get_spark_configs(self) -> Dict[str, str]:
         """Get Spark configuration dictionary for Iceberg"""
@@ -66,31 +95,66 @@ class IcebergConfig:
                 {
                     "spark.sql.catalog.iceberg.type": "rest",
                     "spark.sql.catalog.iceberg.uri": self.catalog_uri,
-                    "spark.sql.catalog.iceberg.s3.endpoint": self.s3_endpoint,
-                    "spark.sql.catalog.iceberg.s3.access-key": self.s3_access_key,
-                    "spark.sql.catalog.iceberg.s3.secret-key": self.s3_secret_key,
-                    "spark.sql.catalog.iceberg.s3.region": self.s3_region,
+                    "spark.sql.catalog.iceberg.s3.endpoint": self.s3_config.endpoint,
+                    "spark.sql.catalog.iceberg.s3.access-key": self.s3_config.access_key,
+                    "spark.sql.catalog.iceberg.s3.secret-key": self.s3_config.secret_key,
+                    "spark.sql.catalog.iceberg.s3.region": self.s3_config.region,
                 }
             )
 
         # S3 configuration for data storage
-        configs.update(
-            {
-                "spark.hadoop.fs.s3.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
-                "spark.hadoop.fs.s3a.access.key": self.s3_access_key,
-                "spark.hadoop.fs.s3a.secret.key": self.s3_secret_key,
-                "spark.hadoop.fs.s3a.endpoint": self.s3_endpoint,
-                "spark.hadoop.fs.s3a.region": self.s3_region,
-                "spark.hadoop.fs.s3a.path.style.access": "true",
-                "spark.hadoop.fs.s3a.connection.ssl.enabled": "false",
-                # Enable S3A metrics to suppress warning and collect useful metrics
-                "spark.hadoop.fs.s3a.metrics.enabled": "true",
-                "spark.hadoop.fs.s3a.metrics.reporting.interval": "60",
-                # Enable Spark SQL metrics
-                "spark.sql.execution.metrics.enabled": "true",
-                "spark.sql.execution.metrics.persist": "true",
-            }
-        )
+        configs.update(self.s3_config.get_spark_configs())
+
+        return configs
+
+
+class PerformanceConfig:
+    """Configuration class for Spark performance settings"""
+
+    def __init__(
+        self,
+        adaptive_query_execution: bool = True,
+        shuffle_partitions: int = 200,
+        max_partition_bytes: str = "128m",
+        advisory_partition_size: str = "128m",
+        skew_join_enabled: bool = True,
+        skewed_partition_threshold: str = "256m",
+        arrow_pyspark_enabled: bool = True,
+        use_kryo_serializer: bool = False,
+    ):
+        self.adaptive_query_execution = adaptive_query_execution
+        self.shuffle_partitions = shuffle_partitions
+        self.max_partition_bytes = max_partition_bytes
+        self.advisory_partition_size = advisory_partition_size
+        self.skew_join_enabled = skew_join_enabled
+        self.skewed_partition_threshold = skewed_partition_threshold
+        self.arrow_pyspark_enabled = arrow_pyspark_enabled
+        self.use_kryo_serializer = use_kryo_serializer
+
+    def get_spark_configs(self) -> Dict[str, str]:
+        """Get Spark configuration dictionary for performance settings"""
+        configs = {
+            "spark.sql.adaptive.enabled": str(self.adaptive_query_execution).lower(),
+            "spark.sql.adaptive.coalescePartitions.enabled": str(
+                self.adaptive_query_execution
+            ).lower(),
+            "spark.sql.adaptive.skewJoin.enabled": str(self.skew_join_enabled).lower(),
+            "spark.sql.adaptive.localShuffleReader.enabled": str(
+                self.adaptive_query_execution
+            ).lower(),
+            "spark.sql.shuffle.partitions": str(self.shuffle_partitions),
+            "spark.sql.files.maxPartitionBytes": self.max_partition_bytes,
+            "spark.sql.adaptive.advisoryPartitionSizeInBytes": self.advisory_partition_size,
+            "spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes": self.skewed_partition_threshold,
+            "spark.sql.execution.arrow.pyspark.enabled": str(
+                self.arrow_pyspark_enabled
+            ).lower(),
+            "spark.sql.execution.arrow.pyspark.fallback.enabled": str(
+                self.arrow_pyspark_enabled
+            ).lower(),
+        }
+        if self.use_kryo_serializer:
+            configs["spark.serializer"] = "org.apache.spark.serializer.KryoSerializer"
 
         return configs
 
@@ -99,6 +163,7 @@ def create_spark_session(
     spark_version: SparkVersion = SparkVersion.SPARK_3_5,
     app_name: str = "SparkApp",
     iceberg_config: Optional[IcebergConfig] = None,
+    performance_config: Optional[PerformanceConfig] = None,
     **additional_configs,
 ) -> SparkSession:
     """
@@ -108,154 +173,65 @@ def create_spark_session(
         spark_version: SparkVersion enum specifying the type of session to create
         app_name: Name of the Spark application (used as prefix for event logs)
         iceberg_config: Optional IcebergConfig for Iceberg integration
+        performance_config: Optional PerformanceConfig for performance tuning
         **additional_configs: Additional Spark configurations (overrides defaults)
 
     Returns:
         SparkSession: Configured Spark session
     """
-    # Create event log directory in app folder
+    # Use provided performance config or create a default one
     log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
     os.makedirs(log_dir, exist_ok=True)
+    if not performance_config:
+        performance_config = PerformanceConfig()
 
-    # Default performance configurations
-    default_performance_configs = {
-        "spark.sql.adaptive.enabled": "true",
-        "spark.sql.adaptive.coalescePartitions.enabled": "true",
-        "spark.sql.adaptive.skewJoin.enabled": "true",
-        "spark.sql.adaptive.localShuffleReader.enabled": "true",
-        "spark.sql.shuffle.partitions": "200",
-        "spark.sql.adaptive.advisoryPartitionSizeInBytes": "128m",
-        "spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes": "256m",
-        "spark.sql.adaptive.skewJoin.skewedPartitionFactor": "5",
+    if not iceberg_config:
+        iceberg_config = IcebergConfig(s3_config=S3FileSystemConfig())
+
+    # Merge configurations: additional_configs override performance configs
+    merged_configs = {
+        **performance_config.get_spark_configs(),
+        **iceberg_config.get_spark_configs(),
         "spark.eventLog.enabled": "true",
         "spark.eventLog.dir": f"file:///opt/bitnami/spark/logs/app/{app_name}",
-        "spark.sql.execution.arrow.pyspark.enabled": "true",
-        "spark.sql.execution.arrow.pyspark.fallback.enabled": "true",
-        "spark.sql.execution.arrow.maxRecordsPerBatch": "10000",
+        **additional_configs,
     }
 
-    # Merge configurations: additional_configs override defaults
-    merged_configs = {**default_performance_configs, **additional_configs}
-
     if spark_version == SparkVersion.SPARK_CONNECT_4_0:
-        return _create_spark_connect_session(app_name, iceberg_config, **merged_configs)
-    elif spark_version == SparkVersion.SPARK_3_5:
-        return _create_pyspark_session(app_name, iceberg_config, **merged_configs)
+        return _create_spark_connect_session(
+            app_name=app_name, spark_params=merged_configs
+        )
+    elif spark_version in [SparkVersion.SPARK_3_5, SparkVersion.SPARK_4_0]:
+        return _create_pyspark_session(app_name=app_name, spark_params=merged_configs)
     else:
         raise ValueError(f"Unsupported Spark version: {spark_version}")
 
 
 def _create_spark_connect_session(
-    app_name: str, iceberg_config: Optional[IcebergConfig] = None, **additional_configs
+    app_name: str, spark_params: Dict[str, str]
 ) -> SparkSession:
     """Create a Spark Connect session (4.0+)"""
-    # Create event log directory in app folder
-    log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
-    os.makedirs(log_dir, exist_ok=True)
-
     builder = SparkSession.builder.appName(app_name).remote("sc://localhost:15002")
-
-    # Apply Iceberg configurations if provided
-    if iceberg_config:
-        for key, value in iceberg_config.get_spark_configs().items():
-            builder = builder.config(key, value)
-
     # Apply additional configurations
-    for key, value in additional_configs.items():
+    for key, value in spark_params.items():
         builder = builder.config(key, value)
 
     return builder.getOrCreate()
 
 
 def _create_pyspark_session(
-    app_name: str, iceberg_config: Optional[IcebergConfig] = None, **additional_configs
+    app_name: str, spark_params: Dict[str, str]
 ) -> SparkSession:
     """Create a regular PySpark session (3.5)"""
     # Create event log directory in app folder
-    log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
-    os.makedirs(log_dir, exist_ok=True)
 
     builder = SparkSession.builder.appName(app_name)
 
-    # Apply Iceberg configurations if provided
-    if iceberg_config:
-        for key, value in iceberg_config.get_spark_configs().items():
-            builder = builder.config(key, value)
-
     # Apply additional configurations
-    for key, value in additional_configs.items():
+    for key, value in spark_params.items():
         builder = builder.config(key, value)
 
     # Set master for regular PySpark
     builder = builder.master("spark://spark-master:7077")
 
     return builder.getOrCreate()
-
-
-# def create_shuffling_spark_session(
-#     app_name: str = "ShufflingIssuesDemo",
-# ) -> SparkSession:
-#     """
-#     Create and configure Spark session with shuffling monitoring using regular PySpark
-
-#     Args:
-#         app_name: Name of the Spark application
-
-#     Returns:
-#         SparkSession: Configured Spark session for shuffling demonstrations
-#     """
-#     # Get AWS credentials from environment
-#     aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID", "admin")
-#     aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY", "password")
-
-#     spark = (
-#         SparkSession.builder.appName(app_name)
-#         .config("spark.sql.streaming.schemaInference", "true")
-#         .config(
-#             "spark.sql.extensions",
-#             "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
-#         )
-#         .config("spark.sql.catalog.iceberg", "org.apache.iceberg.spark.SparkCatalog")
-#         .config("spark.sql.defaultCatalog", "iceberg")
-#         .config("spark.sql.catalog.iceberg.type", "rest")
-#         .config("spark.sql.catalog.iceberg.uri", "http://spark-rest:8181")
-#         .config("spark.sql.catalog.iceberg.s3.endpoint", "http://minio:9000")
-#         .config("spark.sql.catalog.iceberg.warehouse", "s3://data/wh")
-#         .config("spark.sql.catalog.iceberg.s3.access-key", aws_access_key_id)
-#         .config("spark.sql.catalog.iceberg.s3.secret-key", aws_secret_access_key)
-#         .config("spark.sql.catalog.iceberg.s3.region", "us-east-1")
-#         .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-#         .config("spark.hadoop.fs.s3a.access.key", aws_access_key_id)
-#         .config("spark.hadoop.fs.s3a.secret.key", aws_secret_access_key)
-#         .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
-#         .config("spark.hadoop.fs.s3a.region", "us-east-1")
-#         .config("spark.hadoop.fs.s3a.path.style.access", "true")
-#         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-#         # Shuffling-specific configurations
-#         .config("spark.sql.adaptive.enabled", "true")
-#         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
-#         .config("spark.sql.adaptive.skewJoin.enabled", "true")
-#         .config("spark.sql.adaptive.localShuffleReader.enabled", "true")
-#         .config("spark.sql.shuffle.partitions", "200")  # Default shuffle partitions
-#         .config("spark.sql.adaptive.advisoryPartitionSizeInBytes", "128m")
-#         .config("spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes", "256m")
-#         .config("spark.sql.adaptive.skewJoin.skewedPartitionFactor", "5")
-#         # Monitoring configurations
-#         .config("spark.eventLog.enabled", "true")
-#         .config("spark.eventLog.dir", f"file:///opt/bitnami/spark/logs/{app_name}")
-#         .config("spark.sql.execution.arrow.pyspark.enabled", "true")
-#         .master(
-#             "spark://spark-master:7077"
-#         )  # Use Spark cluster instead of Spark Connect
-#         .getOrCreate()
-#     )
-
-#     return spark
-
-
-iceberg_config = IcebergConfig(
-    catalog_type="rest",
-    catalog_uri="http://spark-rest:8181",
-    warehouse="s3://data/wh",
-    s3_endpoint="http://minio:9000",
-)

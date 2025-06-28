@@ -32,12 +32,10 @@ def check_namespace_tables(spark, namespace):
 
 def main():
     # Use default Iceberg configuration
-    iceberg_config = IcebergConfig()
 
     spark = create_spark_session(
         spark_version=SparkVersion.SPARK_3_5,
         app_name=Path(__file__).stem,
-        iceberg_config=iceberg_config,
     )
 
     print("=== SHOWING DATABASES ===")

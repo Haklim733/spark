@@ -3,7 +3,6 @@
 -- 1. Model Execution Time Audit
 AUDIT (
   name assert_model_execution_time,
-  description "Ensure models execute within acceptable time limits"
 );
 
 SELECT 
@@ -12,11 +11,11 @@ SELECT
     performance_status
 FROM (
     SELECT 
-        'legal_documents_cleaned' as model_name,
+        'legaldocs.legal_documents_cleaned' as model_name,
         30 as execution_time_seconds  -- Example execution time
     UNION ALL
     SELECT 
-        'nyc_taxi_aggregated' as model_name,
+        'nyctaxi.nyc_taxi_aggregated' as model_name,
         45 as execution_time_seconds  -- Example execution time
 ) model_performance
 CROSS JOIN (
@@ -32,7 +31,6 @@ CROSS JOIN (
 -- 2. Data Volume Audit
 AUDIT (
   name assert_data_volume_reasonable,
-  description "Ensure data volumes are within expected ranges"
 );
 
 SELECT 
@@ -64,7 +62,6 @@ CROSS JOIN (
 -- 3. Memory Usage Audit
 AUDIT (
   name assert_memory_usage_acceptable,
-  description "Monitor memory usage for data processing"
 );
 
 SELECT 
@@ -95,15 +92,14 @@ CROSS JOIN (
 -- 4. Query Complexity Audit
 AUDIT (
   name assert_query_complexity,
-  description "Check for overly complex queries that might impact performance"
 );
 
 SELECT 
-    'legal_documents_cleaned' as model_name,
+    'legaldocs.legal_documents_cleaned' as model_name,
     'MEDIUM' as complexity_level,
     'ACCEPTABLE' as complexity_status
 UNION ALL
 SELECT 
-    'nyc_taxi_aggregated' as model_name,
+    'nyctaxi.nyc_taxi_aggregated' as model_name,
     'HIGH' as complexity_level,
     'MONITOR' as complexity_status; 

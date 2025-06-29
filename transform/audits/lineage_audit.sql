@@ -3,7 +3,6 @@
 -- 1. Model Dependencies Audit
 AUDIT (
   name assert_model_dependencies,
-  description "Check that all required source tables exist and are accessible"
 );
 
 SELECT 
@@ -11,9 +10,9 @@ SELECT
     source_table,
     dependency_status
 FROM (
-    SELECT 'legal_documents_cleaned' as model_name, 'legal.documents' as source_table
+    SELECT 'legaldocs.legal_documents_cleaned' as model_name, 'legal.documents' as source_table
     UNION ALL
-    SELECT 'nyc_taxi_aggregated' as model_name, 'nyc_taxi_data.yellow_tripdata' as source_table
+    SELECT 'nyctaxi.nyc_taxi_aggregated' as model_name, 'nyc_taxi_data.yellow_tripdata' as source_table
 ) model_deps
 CROSS JOIN (
     SELECT 
@@ -28,7 +27,6 @@ CROSS JOIN (
 -- 2. Column Lineage Validation
 AUDIT (
   name assert_column_lineage,
-  description "Ensure all required columns exist in source tables"
 );
 
 SELECT 
@@ -58,7 +56,6 @@ CROSS JOIN (
 -- 3. Data Freshness Audit
 AUDIT (
   name assert_data_freshness,
-  description "Ensure data is not stale"
 );
 
 SELECT 

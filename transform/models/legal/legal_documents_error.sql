@@ -1,6 +1,8 @@
 MODEL (
-    name legal_documents_error,
-    kind INCREMENTAL,
+    name legal.legal_documents_error,
+    kind INCREMENTAL_BY_TIME_RANGE (
+        time_column quarantined_at,
+    ),
     grain [original_document_id, error_sequence],
     audits [assert_error_data_integrity],
     description "Legal documents error data that works with both DuckDB and Spark gateways"
@@ -22,4 +24,6 @@ SELECT
     error_sequence,
     field_name,
     field_value
-FROM iceberg.legal.documents_error 
+FROM iceberg.legal.documents_error
+WHERE quarantined_at >= @start_date
+  AND quarantined_at < @end_date 

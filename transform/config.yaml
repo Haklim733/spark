@@ -16,27 +16,20 @@ gateways:
   
   spark:
     connection:
-      dialect: spark
       type: spark
       config:
-        spark.master: spark://spark-master:7077
-        spark.sql.catalog.iceberg: org.apache.iceberg.spark.SparkCatalog
-        spark.sql.defaultCatalog: iceberg
-        spark.sql.catalog.iceberg.type: rest
-        spark.sql.catalog.iceberg.uri: http://spark-rest:8181
-        spark.sql.catalog.iceberg.warehouse: s3://data/wh
-        spark.sql.catalog.iceberg.s3.endpoint: http://minio:9000
-        spark.sql.catalog.iceberg.s3.access-key: admin
-        spark.sql.catalog.iceberg.s3.secret-key: password
-        spark.sql.catalog.iceberg.s3.region: us-east-1
-        spark.hadoop.fs.s3.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
-        spark.hadoop.fs.s3a.access.key: admin
-        spark.hadoop.fs.s3a.secret.key: password
-        spark.hadoop.fs.s3a.endpoint: http://minio:9000
-        spark.hadoop.fs.s3a.region: us-east-1
-        spark.hadoop.fs.s3a.path.style.access: true
-        spark.hadoop.fs.s3a.connection.ssl.enabled: false
-        spark.sql.extensions: org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+        # Use local mode since Iceberg JARs aren't available locally
+        spark.master: local[*]
+        # Basic Spark config (no Iceberg extensions)
+        spark.sql.adaptive.enabled: true
+        spark.sql.adaptive.coalescePartitions.enabled: true
+    test_connection:
+      type: spark
+      config:
+        # Use local mode for testing/validation - no cluster needed
+        spark.master: local[*]
+        # Basic Spark config for validation (no Iceberg extensions needed)
+        spark.sql.adaptive.coalescePartitions.enabled: true
     state_connection:
       type: duckdb
       database: 'sqlmesh_spark_state.db'
@@ -64,8 +57,6 @@ default_gateway: local
 
 model_defaults:
   dialect: duckdb
-
-  # For Spark gateway, models can override with: dialect: spark
 
 ignore_patterns:
   - "generator"

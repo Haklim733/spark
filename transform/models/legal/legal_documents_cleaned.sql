@@ -1,6 +1,8 @@
 MODEL (
-    name legal_documents_cleaned,
-    kind INCREMENTAL,
+    name legal.legal_documents_cleaned,
+    kind INCREMENTAL_BY_TIME_RANGE (
+        time_column generation_date,
+    ),
     grain [document_id, generation_date],
     description "Cleaned legal documents that works with both DuckDB and Spark gateways"
 );
@@ -27,8 +29,10 @@ SELECT
         WHEN LOWER(raw_text) LIKE '%legal%' THEN 'legal_related'
         ELSE 'other'
     END as content_category,
-    CURRENT_TIMESTAMP() as processed_at
+    CURRENT_TIMESTAMP as processed_at
 FROM iceberg.legal.documents
-WHERE document_id IS NOT NULL  -- Filter out invalid records
+WHERE generation_date >= @start_date
+  AND generation_date < @end_date
+  AND document_id IS NOT NULL  -- Filter out invalid records
   AND document_type IS NOT NULL
   AND raw_text IS NOT NULL 

@@ -1,5 +1,5 @@
 MODEL (
-    name data_quality_metrics,
+    name legal.data_quality_metrics,
     kind FULL,
     description "Data quality metrics for legal documents and NYC taxi data that works with both gateways"
 );

@@ -1,0 +1,83 @@
+- name: iceberg.legal.documents
+  description: Legal documents with metadata and LLM-extracted information
+  audits:
+    - name: not_null
+      columns: "[document_id]"
+    - name: assert_valid_document_id
+    - name: assert_valid_dates
+    - name: assert_document_content
+  columns:
+    document_id: STRING
+    document_type: STRING
+    raw_text: STRING
+    generation_date: TIMESTAMP
+    file_path: STRING
+    document_length: INT
+    word_count: INT
+    language: STRING
+    metadata: MAP<STRING, STRING>
+
+- name: iceberg.legal.documents_error
+  description: Error/quarantine table for legal documents with detailed schema
+  audits:
+    - name: assert_error_data_integrity
+  columns:
+    original_document_id: STRING
+    document_type: STRING
+    raw_text: STRING
+    generation_date: TIMESTAMP
+    file_path: STRING
+    document_length: INT
+    word_count: INT
+    language: STRING
+    metadata: MAP<STRING, STRING>
+    error_message: STRING
+    error_type: STRING
+    quarantined_at: TIMESTAMP
+    error_sequence: INT
+    field_name: STRING
+    field_value: STRING
+
+- name: iceberg.nyc_taxi_data.yellow_tripdata
+  description: NYC taxi trip data
+  audits:
+    - name: not_null
+      columns: "[VendorID, tpep_pickup_datetime, tpep_dropoff_datetime]"
+    - name: assert_positive_amounts
+    - name: assert_valid_dates
+    - name: assert_valid_passenger_count
+  columns:
+    VendorID: BIGINT
+    tpep_pickup_datetime: TIMESTAMP
+    tpep_dropoff_datetime: TIMESTAMP
+    passenger_count: DOUBLE
+    trip_distance: DOUBLE
+    RatecodeID: DOUBLE
+    store_and_fwd_flag: STRING
+    PULocationID: BIGINT
+    DOLocationID: BIGINT
+    payment_type: BIGINT
+    fare_amount: DOUBLE
+    extra: DOUBLE
+    mta_tax: DOUBLE
+    tip_amount: DOUBLE
+    tolls_amount: DOUBLE
+    improvement_surcharge: DOUBLE
+    total_amount: DOUBLE
+    congestion_surcharge: DOUBLE
+    airport_fee: DOUBLE
+
+- name: iceberg.nyc_taxi_data.yellow_tripdata_error
+  description: Error/quarantine table for NYC taxi data
+  audits:
+    - name: assert_error_data_integrity
+  columns:
+    original_record_id: STRING
+    original_data: MAP<STRING, STRING>
+    error_message: STRING
+    error_type: STRING
+    quarantined_at: TIMESTAMP
+    source_table: STRING
+    processing_step: STRING
+    error_sequence: INT
+    metadata: MAP<STRING, STRING>

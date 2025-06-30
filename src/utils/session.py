@@ -48,6 +48,14 @@ class S3FileSystemConfig:
             # Enable S3A metrics to suppress warning and collect useful metrics
             "spark.hadoop.fs.s3a.metrics.enabled": "true",
             "spark.hadoop.fs.s3a.metrics.reporting.interval": "60",
+            # Additional S3A configurations for better compatibility
+            "spark.hadoop.fs.s3a.connection.timeout": "60000",
+            "spark.hadoop.fs.s3a.socket.timeout": "60000",
+            "spark.hadoop.fs.s3a.max.connections": "100",
+            "spark.hadoop.fs.s3a.threads.max": "20",
+            "spark.hadoop.fs.s3a.threads.core": "10",
+            "spark.hadoop.fs.s3a.buffer.dir": "/tmp",
+            "spark.hadoop.fs.s3a.experimental.input.fadvise": "normal",
         }
 
 
@@ -57,9 +65,9 @@ class IcebergConfig:
     def __init__(
         self,
         s3_config: S3FileSystemConfig,
-        catalog_type: str = "hadoop",
-        catalog_uri: str = "jdbc:sqlite:file:/data/warehouse/iceberg_catalog.db",
-        warehouse: str = "s3://data/warehouse",
+        catalog_type: str = "rest",
+        catalog_uri: str = "http://iceberg-rest:8181",
+        warehouse: str = "s3://data/wh",
     ):
         self.s3_config = s3_config
         self.catalog_type = catalog_type
@@ -70,7 +78,6 @@ class IcebergConfig:
         """Get Spark configuration dictionary for Iceberg"""
         configs = {
             "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
-            "spark.sql.catalog.iceberg": "org.apache.iceberg.spark.SparkCatalog",
             "spark.sql.defaultCatalog": "iceberg",
             "spark.sql.catalog.iceberg.warehouse": self.warehouse,
             "spark.sql.execution.metrics.enabled": "true",
@@ -80,12 +87,14 @@ class IcebergConfig:
         if self.catalog_type == "hadoop":
             configs.update(
                 {
+                    "spark.sql.catalog.iceberg": "org.apache.iceberg.spark.SparkCatalog",
                     "spark.sql.catalog.iceberg.type": "hadoop",
                 }
             )
         elif self.catalog_type == "jdbc":
             configs.update(
                 {
+                    "spark.sql.catalog.iceberg": "org.apache.iceberg.jdbc.JdbcCatalog",
                     "spark.sql.catalog.iceberg.catalog-impl": "org.apache.iceberg.jdbc.JdbcCatalog",
                     "spark.sql.catalog.iceberg.uri": self.catalog_uri,
                 }
@@ -93,12 +102,22 @@ class IcebergConfig:
         elif self.catalog_type == "rest":
             configs.update(
                 {
-                    "spark.sql.catalog.iceberg.type": "rest",
+                    "spark.sql.catalog.iceberg": "org.apache.iceberg.spark.SparkCatalog",
+                    "spark.sql.catalog.iceberg.catalog-impl": "org.apache.iceberg.rest.RESTCatalog",
                     "spark.sql.catalog.iceberg.uri": self.catalog_uri,
                     "spark.sql.catalog.iceberg.s3.endpoint": self.s3_config.endpoint,
                     "spark.sql.catalog.iceberg.s3.access-key": self.s3_config.access_key,
                     "spark.sql.catalog.iceberg.s3.secret-key": self.s3_config.secret_key,
                     "spark.sql.catalog.iceberg.s3.region": self.s3_config.region,
+                    "spark.sql.catalog.iceberg.s3.path-style-access": str(
+                        self.s3_config.path_style_access
+                    ).lower(),
+                    "spark.sql.catalog.iceberg.s3.ssl-enabled": str(
+                        self.s3_config.ssl_enabled
+                    ).lower(),
+                    "spark.sql.catalog.iceberg.s3.connection-timeout": "60000",
+                    "spark.sql.catalog.iceberg.s3.socket-timeout": "60000",
+                    "spark.sql.catalog.iceberg.s3.max-connections": "100",
                 }
             )
 

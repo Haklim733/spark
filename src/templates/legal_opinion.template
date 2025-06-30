@@ -1,0 +1,43 @@
+LEGAL OPINION {{document_number}}
+
+Date: {{date}}
+To: {{to_recipient}}
+From: {{from_author}}
+Subject: {{subject}} Legal Opinion for {{company}}
+
+OPINION
+
+This legal opinion addresses the {{legal_area}} implications for {{company}} operations in the {{industry}} industry.
+
+FACTS
+
+{{company}} is seeking legal guidance regarding {{guidance_area}} and regulatory requirements.
+
+ANALYSIS
+
+Based on my review of applicable laws, regulations, and precedent, I provide the following legal analysis:
+
+1. Applicable Law
+The relevant legal framework governing {{legal_area}} includes federal and state regulations.
+
+2. Compliance Assessment
+{{company}} current practices regarding {{practice_area}} appear to be in compliance with applicable requirements.
+
+3. Risk Evaluation
+The primary legal risks associated with {{risk_area}} include regulatory compliance and potential litigation.
+
+4. Recommendations
+To ensure compliance with {{compliance_area}} requirements, I recommend:
+
+CONCLUSION
+
+Based on this analysis, {{company}} should proceed with the following actions to ensure {{compliance_area}} compliance...
+
+This opinion is based on current law as of {{date}} and may need to be updated if legal requirements change.
+
+Respectfully submitted,
+
+{{attorney_name}}
+Email: {{contact_email}}
+
+Keywords: {{keywords}} 

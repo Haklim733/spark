@@ -33,29 +33,27 @@ def check_namespace_tables(spark, namespace):
 def main():
     # Use default Iceberg configuration
 
-    spark = create_spark_session(
+    with create_spark_session(
         spark_version=SparkVersion.SPARK_3_5,
         app_name=Path(__file__).stem,
-    )
+    ) as spark:
 
-    print("=== SHOWING DATABASES ===")
-    try:
-        databases = spark.sql("SHOW DATABASES;")
-        databases.show(truncate=False)
-    except Exception as e:
-        print(f"❌ Error showing databases: {e}")
+        print("=== SHOWING DATABASES ===")
+        try:
+            databases = spark.sql("SHOW DATABASES;")
+            databases.show(truncate=False)
+        except Exception as e:
+            print(f"❌ Error showing databases: {e}")
 
-    # Check tables in different namespaces
-    namespaces = ["nyc", "legal"]
+        # Check tables in different namespaces
+        namespaces = ["nyc", "legal"]
 
-    for namespace in namespaces:
-        check_namespace_tables(spark, namespace)
+        for namespace in namespaces:
+            check_namespace_tables(spark, namespace)
 
-    print(f"\n{'='*50}")
-    print("Table check complete!")
-    print(f"{'='*50}")
-
-    spark.stop()
+        print(f"\n{'='*50}")
+        print("Table check complete!")
+        print(f"{'='*50}")
 
 
 if __name__ == "__main__":

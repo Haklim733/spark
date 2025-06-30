@@ -11,61 +11,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import udf, col, explode, array, lit, row_number
 from pyspark.sql.types import StringType, ArrayType, StructType, StructField
 from pyspark.sql.window import Window
-
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "admin")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "password")
-
-
-def get_spark_session() -> SparkSession:
-    """Create and configure Spark session using pyspark-client"""
-
-    print("Creating Spark session with pyspark-client...")
-
-    spark = (
-        SparkSession.builder.appName("TextChunker")
-        .config("spark.sql.streaming.schemaInference", "true")
-        .config(
-            "spark.sql.extensions",
-            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
-        )
-        .config("spark.sql.catalog.iceberg", "org.apache.iceberg.spark.SparkCatalog")
-        .config("spark.sql.defaultCatalog", "iceberg")
-        .config("spark.sql.catalog.iceberg.type", "rest")
-        .config("spark.sql.catalog.iceberg.uri", "http://localhost:8181")
-        .config("spark.sql.catalog.iceberg.s3.endpoint", "http://localhost:9000")
-        .config("spark.sql.catalog.iceberg.warehouse", "s3://data/wh")
-        .config("spark.sql.catalog.iceberg.s3.access-key", AWS_ACCESS_KEY_ID)
-        .config("spark.sql.catalog.iceberg.s3.secret-key", AWS_SECRET_ACCESS_KEY)
-        .config("spark.sql.catalog.iceberg.s3.region", "us-east-1")
-        .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.access.key", AWS_ACCESS_KEY_ID)
-        .config("spark.hadoop.fs.s3a.secret.key", AWS_SECRET_ACCESS_KEY)
-        .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000")
-        .config("spark.hadoop.fs.s3a.region", "us-east-1")
-        .config("spark.hadoop.fs.s3a.path.style.access", "true")
-        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-        # pyspark-client specific configurations
-        .config("spark.driver.host", "localhost")
-        .config("spark.driver.bindAddress", "localhost")
-        .config("spark.sql.adaptive.enabled", "true")
-        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
-        # Resource configuration for cluster
-        .config("spark.driver.memory", "1g")
-        .config("spark.executor.memory", "1g")
-        .config("spark.executor.cores", "1")
-        # Connection settings for pyspark-client
-        .config("spark.network.timeout", "800s")
-        .config("spark.executor.heartbeatInterval", "60s")
-        .config("spark.dynamicAllocation.enabled", "false")
-        .master("spark://localhost:7077")
-        .getOrCreate()
-    )
-
-    spark.sparkContext.setLogLevel("INFO")
-    print(f"Spark session created successfully!")
-    print(f"Spark version: {spark.version}")
-    print(f"Master URL: {spark.conf.get('spark.master')}")
-    return spark
+from utils.session import create_spark_session
 
 
 def simple_tokenize(text: str) -> List[str]:
@@ -428,8 +374,7 @@ def main():
     print(f"Method: {chunk_method}")
 
     try:
-        # Create Spark session
-        spark = get_spark_session()
+        spark = create_spark_session()
 
         # Process text files
         df_chunked = process_text_files(

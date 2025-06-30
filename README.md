@@ -1,6 +1,6 @@
 # Spark Project with Iceberg and MinIO
 
-This project provides a complete Spark environment with Apache Iceberg table format and MinIO object storage, using SQLite in-memory for catalog metadata.
+This project provides a complete local environment to run a ELT pipeline to generate and extract text into apache iceberg tables using Python, Spark, MinIO object storage, and SQLMesh for transformations.  The iceberg rest fixture uses SQLite in-memory to service the catalog.
 
 ## Architecture
 
@@ -17,3 +17,22 @@ This project provides a complete Spark environment with Apache Iceberg table for
 - `spark-rest`: Iceberg REST API (port 8181)
 - `minio`: S3-compatible storage (port 9000, console 9001)
 - `mc`: MinIO client for bucket setup
+
+# requirements
+- uv 
+- docker compose
+
+``` bash
+uv sync --all-groups
+```
+``` bash
+docker compose up -d
+```
+
+## workflow
+The data is stored in minio and the iceberg tables are created with Spark. A pyspark job is used to insert the data into the iceberg tables.  The sqlmesh is used to transform the data into the desired format.
+
+1. generate_legal_docs.py: generate legal documents (python, minio)
+2. create_tables.py: create iceberg tables (pyspark)
+3. insert_tables.py: insert legal documents into iceberg table (pyspark)
+4. transformations: sqlmesh 

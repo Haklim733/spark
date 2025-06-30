@@ -2,7 +2,6 @@ gateways:
   local:
     connection:
       type: duckdb
-      database: 'dev.db'
       register_comments: True
       pre_ping: False
       pretty_sql: True
@@ -10,6 +9,15 @@ gateways:
         - httpfs
         - iceberg
         - aws
+      catalogs:
+        iceberg:
+          type: rest
+          uri: 'http://localhost:8181'
+          s3_region: {{ env_var('S3_REGION', 'us-east-1') }}
+          s3_access_key_id: {{ env_var('S3_ACCESS_KEY', 'minioadmin') }}
+          s3_secret_access_key: {{ env_var('S3_SECRET_KEY', 'minioadmin') }}
+          s3_endpoint: {{ env_var('S3_ENDPOINT', 'http://localhost:9000') }}
+          s3_url_style: 'path'
     state_connection:
       type: duckdb
       database: 'sqlmesh_state.db'

@@ -1281,7 +1281,7 @@ def _process_text_file(file_path, spark=None):
 
 
 def _process_json_file(file_path, spark=None):
-    """Process a JSON file and return document data - supports both local and MinIO files"""
+    """ELT approach - load raw data without validation"""
     try:
         import json
 
@@ -1312,12 +1312,38 @@ def _process_json_file(file_path, spark=None):
             filename = file_path.name
 
         # Extract document information from JSON
-        # Assume JSON has fields like document_id, content, document_type, etc.
         doc_id = data.get("document_id", filename.replace(".json", ""))
         doc_type = data.get("document_type", "json_document")
-        content = data.get(
-            "content", json.dumps(data, indent=2)
-        )  # Fallback to full JSON
+        content = data.get("content", json.dumps(data, indent=2))
+
+        # Process metadata - flatten nested structures for MapType compatibility
+        metadata = data.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        # Add standard metadata fields
+        metadata.update(
+            {
+                "source_file": filename,
+                "file_size": str(file_size),
+                "format": "json",
+                "source": "minio" if is_minio_path(file_path_str) else "local",
+                "method": "spark" if is_minio_path(file_path_str) else "local",
+            }
+        )
+
+        # Flatten any nested metadata for MapType compatibility
+        flattened_metadata = {}
+        for key, value in metadata.items():
+            if isinstance(value, dict):
+                # Convert nested dict to JSON string
+                flattened_metadata[key] = json.dumps(value)
+            elif isinstance(value, (list, tuple)):
+                # Convert lists to JSON string
+                flattened_metadata[key] = json.dumps(value)
+            else:
+                # Convert all values to strings for MapType compatibility
+                flattened_metadata[key] = str(value)
 
         # Calculate document statistics
         doc_length = len(content)
@@ -1333,63 +1359,49 @@ def _process_json_file(file_path, spark=None):
             "word_count": word_count,
         }
 
-        # Validate document quality
-        is_valid, errors_list = validate_document_quality(document)
+        # Store raw metadata as JSON string (no validation)
+        raw_metadata_json = json.dumps(flattened_metadata, default=str)
 
-        if is_valid:
-            return {
-                "is_valid": True,
-                "data": {
-                    "document_id": doc_id,
-                    "document_type": doc_type,
-                    "raw_text": content,
-                    "generation_date": datetime.now(),
-                    "file_path": file_path_str,
-                    "document_length": doc_length,
-                    "word_count": word_count,
-                    "language": "en",
-                    "metadata": {
-                        "source_file": filename,
-                        "file_size": file_size,
-                        "format": "json",
-                        "source": "minio" if is_minio_path(file_path_str) else "local",
-                        "method": "spark" if is_minio_path(file_path_str) else "local",
-                    },
-                },
-                "document": document,
-                "errors": None,
-            }
-        else:
-            return {
-                "is_valid": False,
-                "data": None,
-                "document": document,
-                "errors": errors_list,
-            }
+        # Always load - even if data looks "bad"
+        return {
+            "is_valid": True,  # Always load in ELT
+            "data": {
+                "document_id": doc_id,
+                "document_type": doc_type,
+                "raw_text": content,
+                "raw_metadata": raw_metadata_json,
+                "file_path": file_path_str,
+                "document_length": doc_length,
+                "word_count": word_count,
+                "language": "en",
+                "load_timestamp": datetime.now(),
+                "source_system": "file_ingestion",
+                "load_status": "loaded",  # Track load status
+            },
+            "document": document,
+            "errors": None,
+        }
 
     except Exception as e:
-        filename = (
-            file_path.name
-            if hasattr(file_path, "name")
-            else str(file_path).split("/")[-1]
-        )
+        # Only handle critical errors that prevent loading
         return {
             "is_valid": False,
-            "data": None,
-            "document": {
+            "data": {
                 "document_id": filename.replace(".json", ""),
                 "document_type": "unknown",
-                "content": "",
-                "filename": filename,
+                "raw_text": "",
+                "raw_metadata": "{}",
+                "file_path": file_path_str,
                 "document_length": 0,
                 "word_count": 0,
+                "language": "en",
+                "load_timestamp": datetime.now(),
+                "source_system": "file_ingestion",
+                "load_status": "load_failed",
+                "load_error": str(e),
             },
-            "errors": [
-                {
-                    "message": f"JSON processing error: {str(e)}",
-                    "type": "processing_error",
-                }
-            ],
+            "document": document,
+            "errors": [str(e)],
         }
 
 
@@ -1654,49 +1666,36 @@ def main():
     print(f"   - Table operation: {args.table_op}")
 
     app_name = Path(__file__).stem
-    spark = create_spark_session(
+    with create_spark_session(
         spark_version=SparkVersion.SPARK_3_5,
         app_name=app_name,
         iceberg_config=IcebergConfig(
             s3_config=S3FileSystemConfig(),
         ),
-    )
+    ) as spark:
 
-    if not spark:
-        print("❌ Failed to create Spark session. Exiting.")
-        return False
+        if args.table_op == "insert":
+            spark.sql(f"TRUNCATE TABLE {table_name}")
 
-    print("✅ Spark session created successfully")
+        # Insert data using the unified function with optimized settings
+        print(f"\n📁 Inserting data into {table_name}...")
 
-    if args.table_op == "insert":
-        spark.sql(f"TRUNCATE TABLE {table_name}")
+        @custom_logger(__name__, require_spark=True)
+        def run_etl(spark=spark):
+            return insert_files(
+                spark=spark,
+                docs_dir=file_dir,
+                table_name=table_name,
+                use_parallel=use_parallel,
+                num_partitions=partitions,
+            )
 
-    # Insert data using the unified function with optimized settings
-    print(f"\n📁 Inserting data into {table_name}...")
+        run_etl()
 
-    @custom_logger(__name__, require_spark=True)
-    def run_etl(spark=spark):
-        return insert_files(
-            spark=spark,
-            docs_dir=file_dir,
-            table_name=table_name,
-            use_parallel=use_parallel,
-            num_partitions=partitions,
-        )
-
-    run_etl()
-
-    try:
         count_result = spark.sql(f"SELECT COUNT(*) as count FROM {table_name}")
         final_count = count_result.collect()[0]["count"]
         print(f"📊 Final table count: {final_count:,} records")
-    except Exception as e:
-        print(f"⚠️  Could not get final count: {e}")
-    else:
-        print(f"❌ Failed to insert files into {table_name}")
-
-    print("\n🎉 Data insertion completed!")
-    print(spark.job_id)
+        print(spark.job_id)
 
 
 if __name__ == "__main__":

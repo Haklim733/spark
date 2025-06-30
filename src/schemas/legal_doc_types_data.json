@@ -1,0 +1,63 @@
+[
+  {
+    "name": "contract",
+    "keywords": [
+      "agreement",
+      "terms",
+      "conditions",
+      "parties",
+      "obligations",
+      "liability"
+    ],
+    "description": "Legal agreement between parties",
+    "template": "contract_template"
+  },
+  {
+    "name": "legal_memo",
+    "keywords": [
+      "analysis",
+      "precedent",
+      "jurisdiction",
+      "statute",
+      "interpretation"
+    ],
+    "description": "Legal memorandum for internal use",
+    "template": "memo_template"
+  },
+  {
+    "name": "court_filing",
+    "keywords": [
+      "petition",
+      "motion",
+      "affidavit",
+      "evidence",
+      "testimony"
+    ],
+    "description": "Court filing documents",
+    "template": "court_filing_template"
+  },
+  {
+    "name": "policy_document",
+    "keywords": [
+      "policy",
+      "procedure",
+      "compliance",
+      "regulations",
+      "guidelines"
+    ],
+    "description": "Policy and procedure documents",
+    "template": "policy_template"
+  },
+  {
+    "name": "legal_opinion",
+    "keywords": [
+      "opinion",
+      "advice",
+      "counsel",
+      "legal_analysis",
+      "recommendation"
+    ],
+    "description": "Legal opinion documents",
+    "template": "opinion_template"
+  }
+]

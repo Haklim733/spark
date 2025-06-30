@@ -5,13 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "pyiceberg[duckdb,pyarrow,sql-sqlite]>=0.9.0",
     "pyspark[connect,sql]>=3.5.0,<4.0.0",
-    "soli-data-generator>=0.1.0",
-    "sqlalchemy>=2.0.41",
     "pytest>=8.4.1",
-    "psycopg2-binary>=2.9.10",
-    "sqlmesh[athena,postgres,web]>=0.164.0",
+    "minio>=7.2.15",
+    "jsonschema>=4.24.0",
+    "faker>=28.4.1",
 ]
 
 [tool.pytest.ini_options]
@@ -38,5 +36,5 @@ markers = [
 [dependency-groups]
 transform = [
     "psycopg2-binary>=2.9.10",
-    "sqlmesh[athena,postgres,web]>=0.164.0",
+    "sqlmesh[postgres,web]>=0.164.0",
 ]

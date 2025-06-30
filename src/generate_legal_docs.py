@@ -1,518 +1,381 @@
 #!/usr/bin/env python3
 """
-Script to generate 1000 unstructured legal text documents using SOLI data generator.
-Based on https://github.com/alea-institute/folio-data-generator
-Uses PySpark to save documents to MinIO.
+Script to generate legal text documents using template formatting with Faker data.
+Uses Python MinIO library to save documents in structured format: /docs/legal/{doc_type}/{date}/{uuid}.txt
+Also creates separate JSON metadata files: /docs/legal/{doc_type}/{date}/{uuid}.json
+Implements data validation using schemas from models.py
 """
 
-import os
 import random
+import uuid
+import json
+import io
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
 
-# Import SOLI data generator components
-from soli import SOLI
-from soli_data_generator.procedural.template import TemplateFormatter
+from faker import Faker
 
-# Import Spark session utilities
-from utils.session import create_spark_session, SparkVersion, IcebergConfig
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.types import StructType, StructField, StringType, TimestampType
-from pyspark.sql.functions import current_timestamp, lit
+# Import MinIO client
+from minio import Minio
+from minio.error import S3Error
 
-# Import shared legal document models
+# Import shared legal document models and validation
 from models import (
-    LEGAL_DOC_TYPES,
-    VALID_DOCUMENT_TYPES,
-    get_legal_doc_type,
     get_all_legal_doc_types,
-    is_valid_document_type,
-    get_document_keywords,
-    LEGAL_DOC_TYPES_DICT,
+    get_legal_doc_type,
+    validate_legal_document_metadata,
 )
 
+# Initialize Faker
+fake = Faker()
 
-def create_legal_documents_schema() -> StructType:
+
+def create_minio_client() -> Minio:
     """
-    Create Spark schema for legal documents
+    Create and configure MinIO client
 
     Returns:
-        StructType: Schema for legal documents DataFrame
+        Minio: Configured MinIO client
     """
-    return StructType(
-        [
-            StructField("document_id", StringType(), False),
-            StructField("document_type", StringType(), False),
-            StructField("content", StringType(), False),
-            StructField("keywords", StringType(), False),
-            StructField("filename", StringType(), False),
-            StructField("generated_at", TimestampType(), False),
-        ]
+    minio_client = Minio(
+        "localhost:9000",
+        access_key="admin",
+        secret_key="password",
+        secure=False,  # HTTP for local development
     )
+    return minio_client
+
+
+def load_template_content(template_name: str) -> str:
+    """
+    Load template content from templates directory
+
+    Args:
+        template_name: Name of the template file (without .template extension)
+
+    Returns:
+        Template content as string
+    """
+    template_path = Path(__file__).parent / "templates" / f"{template_name}.template"
+    with open(template_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def generate_template_data(
+    doc_type: Dict[str, Any], document_number: int
+) -> Dict[str, Any]:
+    """
+    Generate template data for document generation using Faker for realistic data
+
+    Args:
+        doc_type: Document type configuration
+        document_number: Document number for this generation
+
+    Returns:
+        Dictionary with template variables
+    """
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    current_year = datetime.now().year
+
+    # Generate realistic names and data using Faker
+    company_name = fake.company()
+    attorney_name = fake.name()
+    party_a_name = fake.name()
+    party_b_name = fake.name()
+    department_head = fake.name()
+    company_address = fake.address()
+    company_phone = fake.phone_number()
+    company_email = fake.company_email()
+
+    # Generate industry-specific data
+    industries = [
+        "Technology",
+        "Healthcare",
+        "Finance",
+        "Manufacturing",
+        "Retail",
+        "Consulting",
+        "Real Estate",
+        "Education",
+    ]
+    selected_industry = random.choice(industries)
+
+    # Generate business types based on industry
+    business_types = {
+        "Technology": [
+            "software development",
+            "IT consulting",
+            "cybersecurity",
+            "data analytics",
+        ],
+        "Healthcare": [
+            "medical services",
+            "pharmaceuticals",
+            "healthcare consulting",
+            "medical devices",
+        ],
+        "Finance": [
+            "investment banking",
+            "asset management",
+            "insurance",
+            "financial consulting",
+        ],
+        "Manufacturing": ["automotive", "electronics", "chemicals", "textiles"],
+        "Retail": ["e-commerce", "brick-and-mortar", "wholesale", "fashion"],
+        "Consulting": [
+            "management consulting",
+            "strategy consulting",
+            "operations consulting",
+            "technology consulting",
+        ],
+        "Real Estate": [
+            "property development",
+            "property management",
+            "real estate investment",
+            "commercial leasing",
+        ],
+        "Education": [
+            "higher education",
+            "K-12 education",
+            "online learning",
+            "educational technology",
+        ],
+    }
+
+    business_type = random.choice(
+        business_types.get(selected_industry, ["general business"])
+    )
+
+    # Base template data
+    template_data = {
+        "document_number": f"{document_number:04d}",
+        "date": current_date,
+        "company": company_name,
+        "industry": selected_industry,
+        "keywords": ", ".join(doc_type["keywords"]),
+        "legal_area": doc_type["keywords"][0] if doc_type["keywords"] else "General",
+        "compliance_area": (
+            doc_type["keywords"][0] if doc_type["keywords"] else "General"
+        ),
+        "training_area": doc_type["keywords"][0] if doc_type["keywords"] else "General",
+        "guidance_area": doc_type["keywords"][0] if doc_type["keywords"] else "General",
+        "practice_area": doc_type["keywords"][0] if doc_type["keywords"] else "General",
+        "risk_area": doc_type["keywords"][0] if doc_type["keywords"] else "General",
+        "concern_area": doc_type["keywords"][0] if doc_type["keywords"] else "General",
+        "documentation_area": (
+            doc_type["keywords"][0] if doc_type["keywords"] else "General"
+        ),
+        "legal_matter": doc_type["keywords"][0] if doc_type["keywords"] else "General",
+        "policy_type": doc_type["keywords"][0] if doc_type["keywords"] else "General",
+        "subject": doc_type["keywords"][0] if doc_type["keywords"] else "Legal",
+        "to_recipient": f"Legal Department - {department_head}",
+        "from_author": attorney_name,
+        "attorney_name": attorney_name,
+        "department": "Legal Compliance",
+        "contact_email": company_email,
+        "company_address": company_address,
+        "company_phone": company_phone,
+        "filing_date": current_date,
+        "effective_date": current_date,
+        "start_date": current_date,
+        "case_number": f"CV-{current_year}-{document_number:04d}",
+        "policy_number": f"POL-{current_year}-{document_number:04d}",
+        "parties": f"{party_a_name} and {party_b_name}",
+        "party_a": party_a_name,
+        "party_b": party_b_name,
+        "business_type": business_type,
+        "service_area": (
+            doc_type["keywords"][0]
+            if doc_type["keywords"]
+            else "general legal services"
+        ),
+        "service_type": doc_type["keywords"][0] if doc_type["keywords"] else "legal",
+        "hourly_rate": f"${random.randint(100, 300)}",
+        "notice_period": f"{random.randint(15, 60)} days",
+    }
+
+    return template_data
+
+
+def generate_document_content(doc_type: Dict[str, Any], document_number: int) -> str:
+    """
+    Generate document content using template formatting
+
+    Args:
+        doc_type: Document type configuration
+        document_number: Document number
+
+    Returns:
+        Generated document content
+    """
+    # Load template content
+    template_name = doc_type["name"]
+    template_content = load_template_content(template_name)
+
+    # Generate template data
+    template_data = generate_template_data(doc_type, document_number)
+
+    # Format template with data using Python string formatting
+    try:
+        content = template_content.format(**template_data)
+        return content
+    except Exception as e:
+        raise Exception(f"Error formatting template for {doc_type['name']}: {e}")
+
+
+def create_document_metadata(doc: Dict[str, Any], doc_uuid: str) -> Dict[str, Any]:
+    """
+    Create metadata dictionary for a document
+
+    Args:
+        doc: Document dictionary
+        doc_uuid: UUID of the document
+
+    Returns:
+        Dict containing document metadata
+    """
+    metadata = {
+        "document_id": doc["document_id"],
+        "document_type": doc["document_type"],
+        "uuid": doc_uuid,
+        "content_filename": f"{doc_uuid}.txt",
+        "metadata_filename": f"{doc_uuid}.json",
+        "keywords": doc["keywords"],
+        "generated_at": (
+            doc["generated_at"].isoformat()
+            if isinstance(doc["generated_at"], datetime)
+            else str(doc["generated_at"])
+        ),
+        "content_length": len(doc["content"]),
+        "content_preview": (
+            doc["content"][:200] + "..."
+            if len(doc["content"]) > 200
+            else doc["content"]
+        ),
+        "processing_timestamp": datetime.now().isoformat(),
+        "source": "soli_legal_document_generator",
+        "metadata_version": "1.0",
+    }
+
+    return metadata
 
 
 def save_documents_to_minio(
-    spark: SparkSession,
     documents: List[Dict[str, Any]],
-    output_path: str = "s3://data/docs/legal",
+    bucket_name: str = "data",
+    base_path: str = "docs/legal",
 ) -> None:
     """
-    Save generated documents to MinIO using Spark
+    Save documents as individual text files with separate JSON metadata files in MinIO.
+    Structure: /docs/legal/{document_type}/{date}/{uuid}.txt + {uuid}.json
 
     Args:
-        spark: SparkSession instance
         documents: List of document dictionaries
-        output_path: MinIO path to save documents
+        bucket_name: MinIO bucket name
+        base_path: Base path for documents
     """
-    # Create DataFrame from documents
-    schema = create_legal_documents_schema()
-    df = spark.createDataFrame(documents, schema)
+    print(f"Saving {len(documents)} documents with metadata to MinIO")
 
-    # Add timestamp column
-    df = df.withColumn("generated_at", current_timestamp())
+    # Create MinIO client
+    minio_client = create_minio_client()
 
-    print(f"Saving {len(documents)} documents to MinIO at {output_path}")
+    # Get current date for directory structure
+    current_date = datetime.now().strftime("%Y%m%d")
 
-    # Write to MinIO as Parquet files
-    df.write.mode("overwrite").parquet(output_path)
+    total_saved = 0
+    total_metadata_saved = 0
 
-    print(f"Successfully saved documents to MinIO")
+    # Save each document individually with structured path
+    for i, doc in enumerate(documents):
+        doc_type = doc["document_type"]
 
-    # Show sample of saved data
-    print("\nSample of saved documents:")
-    df.show(5, truncate=False)
+        # Generate UUID for filename
+        doc_uuid = str(uuid.uuid4())
 
+        # Create file paths
+        content_filename = f"{doc_uuid}.txt"
+        metadata_filename = f"{doc_uuid}.json"
 
-def save_documents_as_text_files(
-    spark: SparkSession,
-    documents: List[Dict[str, Any]],
-    output_path: str = "s3://data/docs/legal/text",
-) -> None:
-    """
-    Save documents as individual text files in MinIO
+        content_path = f"{base_path}/{doc_type}/{current_date}/{content_filename}"
+        metadata_path = f"{base_path}/{doc_type}/{current_date}/{metadata_filename}"
 
-    Args:
-        spark: SparkSession instance
-        documents: List of document dictionaries
-        output_path: MinIO path to save text files
-    """
-    print(f"Saving {len(documents)} documents as text files to MinIO at {output_path}")
+        # Prepare content
+        content = doc["content"]
+        content_bytes = content.encode("utf-8")
 
-    # Create DataFrame with content and filename
-    text_df = spark.createDataFrame(
-        [(doc["content"], doc["filename"]) for doc in documents],
-        ["content", "filename"],
+        # Create metadata
+        metadata = create_document_metadata(doc, doc_uuid)
+        metadata["content_file_path"] = f"s3://{bucket_name}/{content_path}"
+        metadata["metadata_file_path"] = f"s3://{bucket_name}/{metadata_path}"
+
+        # Validate metadata before saving
+        if not validate_legal_document_metadata(metadata):
+            print(
+                f"❌ Metadata validation failed for document {doc['document_id']} - Skipping save."
+            )
+            continue
+
+        metadata_bytes = json.dumps(metadata, indent=2).encode("utf-8")
+
+        try:
+            # Upload document content using BytesIO
+            content_stream = io.BytesIO(content_bytes)
+            minio_client.put_object(
+                bucket_name,
+                content_path,
+                content_stream,
+                length=len(content_bytes),
+                content_type="text/plain",
+            )
+
+            # Upload metadata using BytesIO
+            metadata_stream = io.BytesIO(metadata_bytes)
+            minio_client.put_object(
+                bucket_name,
+                metadata_path,
+                metadata_stream,
+                length=len(metadata_bytes),
+                content_type="application/json",
+            )
+
+            # Update document record with file paths
+            doc["filename"] = content_filename
+            doc["file_path"] = f"s3://{bucket_name}/{content_path}"
+            doc["metadata_path"] = f"s3://{bucket_name}/{metadata_path}"
+
+            total_saved += 1
+            total_metadata_saved += 1
+
+            if (i + 1) % 100 == 0:
+                print(f"Saved {i + 1} document pairs (content + metadata)...")
+
+        except S3Error as e:
+            print(f"Error saving document {i+1}: {e}")
+            continue
+
+    print(f"\nSuccessfully saved {total_saved} text files to MinIO")
+    print(f"Successfully saved {total_metadata_saved} metadata files to MinIO")
+    print(
+        f"Structure: s3://{bucket_name}/{base_path}/{{doc_type}}/{current_date}/{{uuid}}.txt + .json"
     )
-
-    # Write each document as a separate text file
-    text_df.write.mode("overwrite").option("header", "false").csv(output_path)
-
-    print(f"Successfully saved text files to MinIO")
+    print(f"Date directory: {current_date}")
 
 
-def generate_fallback_content(i, doc_type):
-    """Fallback content generation when SOLI is not available"""
-    fallback_content = f"""
-    LEGAL DOCUMENT {i+1:04d}
-
-    This is a legal document of type {doc_type['name'].replace('_', ' ').title()}.
-
-    The parties herein agree to the following terms and conditions:
-
-    1. This document constitutes a legally binding agreement between the parties.
-    2. All terms and conditions outlined herein shall be enforceable under applicable law.
-    3. Any disputes arising from this agreement shall be resolved through appropriate legal channels.
-    4. This document may be amended only through written agreement of all parties.
-
-    Keywords: {', '.join(doc_type['keywords'])}
-
-    This document is generated for demonstration purposes and contains unstructured legal text content.
+def generate_legal_documents(num_docs: int = 1000) -> List[Dict[str, Any]]:
     """
-    return fallback_content
-
-
-def generate_contract_document(formatter, doc_type, i):
-    """
-    Generate contract document using SOLI procedural template generation
+    Generate legal documents using template formatting
 
     Args:
-        formatter: TemplateFormatter instance
-        doc_type: Document type configuration
-        i: Document index
+        num_docs: Number of documents to generate
 
     Returns:
-        Generated contract document content
+        List of generated document dictionaries
     """
-    template = """
-    LEGAL DOCUMENT {doc_id:04d} - CONTRACT AGREEMENT
-
-    Date: <|date|>
-    Document Type: Contract Agreement
-    Parties: <|name:1|> and <|name:2|>
-    Company: <|company|>
-    Industry: <|industry|>
-    Legal Area: <|area_of_law|>
-
-    AGREEMENT
-
-    This contract is entered into on <|date|> between <|name:1|> (hereinafter "Party A") and <|name:2|> (hereinafter "Party B").
-
-    WHEREAS, Party A is engaged in the business of <|industry|> and Party B is seeking services in the area of <|area_of_law|>;
-
-    NOW, THEREFORE, in consideration of the mutual promises and covenants contained herein, the parties agree as follows:
-
-    1. SCOPE OF SERVICES
-    Party A shall provide <|area_of_law|> services to Party B in accordance with the terms and conditions set forth in this agreement.
-
-    2. TERM
-    This agreement shall commence on <|date|> and continue until terminated by either party in accordance with the provisions herein.
-
-    3. COMPENSATION
-    Party B shall compensate Party A for services rendered at the rate of <|currency|> <|number|> per hour.
-
-    4. CONFIDENTIALITY
-    Both parties agree to maintain the confidentiality of all proprietary information shared during the course of this agreement.
-
-    5. TERMINATION
-    Either party may terminate this agreement with thirty (30) days written notice to the other party.
-
-    IN WITNESS WHEREOF, the parties have executed this agreement as of the date first written above.
-
-    <|name:1|>                    <|name:2|>
-    Party A                       Party B
-
-    Keywords: {keywords}
-    """
-
-    try:
-        formatted_content = formatter(
-            template.format(doc_id=i + 1, keywords=", ".join(doc_type["keywords"]))
-        )
-        return formatted_content
-    except Exception as e:
-        print(f"Error in contract generation: {e}")
-        return generate_fallback_content(i, doc_type)
-
-
-def generate_legal_memo_document(formatter, doc_type, i):
-    """
-    Generate legal memorandum using SOLI procedural template generation
-
-    Args:
-        formatter: TemplateFormatter instance
-        doc_type: Document type configuration
-        i: Document index
-
-    Returns:
-        Generated legal memo document content
-    """
-    template = """
-    LEGAL MEMORANDUM {doc_id:04d}
-
-    Date: <|date|>
-    To: <|name:1|>
-    From: <|name:2|>
-    Subject: <|area_of_law|> Analysis for <|company|>
-
-    MEMORANDUM
-
-    This memorandum addresses the legal implications of <|area_of_law|> as it relates to <|company|> operations in the <|industry|> industry.
-
-    BACKGROUND
-
-    <|company|> is a <|industry|> company that requires legal analysis regarding <|area_of_law|> compliance and regulatory requirements.
-
-    LEGAL ANALYSIS
-
-    Based on current legal precedent and statutory interpretation, the following analysis applies:
-
-    1. Regulatory Framework
-    The applicable regulations governing <|area_of_law|> in the <|industry|> sector include...
-
-    2. Compliance Requirements
-    <|company|> must ensure compliance with the following requirements...
-
-    3. Risk Assessment
-    The primary legal risks associated with <|area_of_law|> include...
-
-    RECOMMENDATIONS
-
-    Based on this analysis, I recommend the following actions:
-
-    1. Immediate compliance review
-    2. Documentation updates
-    3. Staff training on <|area_of_law|> requirements
-
-    CONCLUSION
-
-    This memorandum provides a comprehensive analysis of <|area_of_law|> implications for <|company|>.
-
-    Keywords: {keywords}
-    """
-
-    try:
-        formatted_content = formatter(
-            template.format(doc_id=i + 1, keywords=", ".join(doc_type["keywords"]))
-        )
-        return formatted_content
-    except Exception as e:
-        print(f"Error in legal memo generation: {e}")
-        return generate_fallback_content(i, doc_type)
-
-
-def generate_court_filing_document(formatter, doc_type, i):
-    """
-    Generate court filing document using SOLI procedural template generation
-
-    Args:
-        formatter: TemplateFormatter instance
-        doc_type: Document type configuration
-        i: Document index
-
-    Returns:
-        Generated court filing document content
-    """
-    template = """
-    COURT FILING {doc_id:04d}
-
-    IN THE COURT OF <|jurisdiction|>
-    Case No: <|number|>
-    Date Filed: <|date|>
-
-    PETITION/MOTION
-
-    COMES NOW <|name:1|>, Petitioner/Movant, by and through counsel, and respectfully requests this Court to consider the following:
-
-    I. INTRODUCTION
-
-    This filing addresses matters related to <|area_of_law|> in the case involving <|company|>.
-
-    II. FACTUAL BACKGROUND
-
-    <|company|> operates in the <|industry|> industry and has been involved in legal proceedings related to <|area_of_law|>.
-
-    III. LEGAL ARGUMENT
-
-    Based on applicable law and precedent, the following legal arguments are presented:
-
-    1. Jurisdiction
-    This Court has proper jurisdiction over the subject matter and parties.
-
-    2. Merits
-    The legal merits of this case support the requested relief.
-
-    3. Relief Sought
-    Petitioner/Movant seeks the following relief...
-
-    IV. CONCLUSION
-
-    For the foregoing reasons, Petitioner/Movant respectfully requests that this Court grant the requested relief.
-
-    Respectfully submitted,
-
-    <|name:1|>
-    Attorney for Petitioner/Movant
-    <|email|>
-    <|phone|>
-
-    Keywords: {keywords}
-    """
-
-    try:
-        formatted_content = formatter(
-            template.format(doc_id=i + 1, keywords=", ".join(doc_type["keywords"]))
-        )
-        return formatted_content
-    except Exception as e:
-        print(f"Error in court filing generation: {e}")
-        return generate_fallback_content(i, doc_type)
-
-
-def generate_policy_document(formatter, doc_type, i):
-    """
-    Generate policy document using SOLI procedural template generation
-
-    Args:
-        formatter: TemplateFormatter instance
-        doc_type: Document type configuration
-        i: Document index
-
-    Returns:
-        Generated policy document content
-    """
-    template = """
-    POLICY DOCUMENT {doc_id:04d}
-
-    <|company|> - <|area_of_law|> Policy
-
-    Effective Date: <|date|>
-    Policy Number: <|number|>
-    Department: Legal Compliance
-
-    POLICY STATEMENT
-
-    <|company|> is committed to ensuring compliance with all applicable <|area_of_law|> regulations and requirements in the <|industry|> industry.
-
-    SCOPE
-
-    This policy applies to all employees, contractors, and third parties conducting business on behalf of <|company|>.
-
-    PROCEDURES
-
-    1. Compliance Requirements
-    All personnel must adhere to the following <|area_of_law|> requirements:
-
-    2. Reporting Procedures
-    Any violations or concerns related to <|area_of_law|> must be reported to <|name:1|> at <|email|>.
-
-    3. Training Requirements
-    Annual training on <|area_of_law|> compliance is mandatory for all relevant personnel.
-
-    4. Documentation
-    All <|area_of_law|> related activities must be properly documented and maintained.
-
-    ENFORCEMENT
-
-    Violations of this policy may result in disciplinary action up to and including termination of employment.
-
-    REVIEW AND UPDATES
-
-    This policy will be reviewed annually and updated as necessary to ensure continued compliance with <|area_of_law|> requirements.
-
-    Contact: <|name:2|>, Legal Department
-    Email: <|email|>
-
-    Keywords: {keywords}
-    """
-
-    try:
-        formatted_content = formatter(
-            template.format(doc_id=i + 1, keywords=", ".join(doc_type["keywords"]))
-        )
-        return formatted_content
-    except Exception as e:
-        print(f"Error in policy document generation: {e}")
-        return generate_fallback_content(i, doc_type)
-
-
-def generate_legal_opinion_document(formatter, doc_type, i):
-    """
-    Generate legal opinion document using SOLI procedural template generation
-
-    Args:
-        formatter: TemplateFormatter instance
-        doc_type: Document type configuration
-        i: Document index
-
-    Returns:
-        Generated legal opinion document content
-    """
-    template = """
-    LEGAL OPINION {doc_id:04d}
-
-    Date: <|date|>
-    To: <|name:1|>
-    From: <|name:2|>, Legal Counsel
-    Subject: <|area_of_law|> Legal Opinion for <|company|>
-
-    OPINION
-
-    This legal opinion addresses the <|area_of_law|> implications for <|company|> operations in the <|industry|> industry.
-
-    FACTS
-
-    <|company|> is seeking legal guidance regarding <|area_of_law|> compliance and regulatory requirements.
-
-    ANALYSIS
-
-    Based on my review of applicable laws, regulations, and precedent, I provide the following legal analysis:
-
-    1. Applicable Law
-    The relevant legal framework governing <|area_of_law|> includes...
-
-    2. Compliance Assessment
-    <|company|> current practices regarding <|area_of_law|> appear to be...
-
-    3. Risk Evaluation
-    The primary legal risks associated with <|area_of_law|> include...
-
-    4. Recommendations
-    To ensure compliance with <|area_of_law|> requirements, I recommend:
-
-    CONCLUSION
-
-    Based on this analysis, <|company|> should proceed with the following actions to ensure <|area_of_law|> compliance...
-
-    This opinion is based on current law as of <|date|> and may need to be updated if legal requirements change.
-
-    Respectfully submitted,
-
-    <|name:2|>
-    Legal Counsel
-    <|email|>
-
-    Keywords: {keywords}
-    """
-
-    try:
-        formatted_content = formatter(
-            template.format(doc_id=i + 1, keywords=", ".join(doc_type["keywords"]))
-        )
-        return formatted_content
-    except Exception as e:
-        print(f"Error in legal opinion generation: {e}")
-        return generate_fallback_content(i, doc_type)
-
-
-def get_document_generator(doc_type_name):
-    """
-    Get the appropriate document generation function based on document type
-
-    Args:
-        doc_type_name: Name of the document type
-
-    Returns:
-        Function to generate the specific document type
-    """
-    generators = {
-        "contract": generate_contract_document,
-        "legal_memo": generate_legal_memo_document,
-        "court_filing": generate_court_filing_document,
-        "policy_document": generate_policy_document,
-        "legal_opinion": generate_legal_opinion_document,
-    }
-
-    return generators.get(doc_type_name, generate_contract_document)
-
-
-def generate_legal_documents_with_spark(num_docs, spark_session=None):
-    """
-    Generate unstructured legal text documents using SOLI data generator and save to MinIO via Spark.
-
-    Args:
-        num_docs (int): Number of documents to generate
-        spark_session: Optional SparkSession instance (will create one if not provided)
-    """
-
-    # Initialize SOLI components
-    try:
-        # Initialize SOLI graph
-        soli_graph = SOLI()
-
-        # Initialize template formatter
-        formatter = TemplateFormatter()
-
-        print("SOLI data generator initialized successfully.")
-    except Exception as e:
-        print(f"Error initializing SOLI: {e}")
-        print("Falling back to basic content generation.")
-        formatter = None
-
-    # Use shared legal document types from legal_document_models.py
+    # Get legal document types from models
     legal_doc_types = get_all_legal_doc_types()
 
-    print(f"Generating {num_docs} legal documents and saving to MinIO...")
+    print(f"Generating {num_docs} legal documents using template formatting...")
 
     # Track document generation statistics
     doc_type_counts = {doc_type["name"]: 0 for doc_type in legal_doc_types}
@@ -526,22 +389,18 @@ def generate_legal_documents_with_spark(num_docs, spark_session=None):
         doc_type_counts[doc_type["name"]] += 1
 
         try:
-            if formatter:
-                doc_generator = get_document_generator(doc_type["name"])
-                content = doc_generator(formatter, doc_type, i)
-            else:
-                content = generate_fallback_content(i, doc_type)
-
-            # Create filename
-            filename = f"legal_doc_{i+1:04d}_{doc_type['name']}.txt"
+            # Generate content using template formatting
+            content = generate_document_content(doc_type, i + 1)
 
             # Create document record
             document = {
                 "document_id": f"doc_{i+1:04d}",
                 "document_type": doc_type["name"],
                 "content": content,
-                "keywords": ", ".join(doc_type["keywords"]),
-                "filename": filename,
+                "keywords": doc_type["keywords"],
+                "filename": "",  # Will be set during save
+                "file_path": "",  # Will be set during save
+                "metadata_path": "",  # Will be set during save
                 "generated_at": datetime.now(),
             }
 
@@ -552,114 +411,58 @@ def generate_legal_documents_with_spark(num_docs, spark_session=None):
 
         except Exception as e:
             print(f"Error generating document {i+1}: {e}")
-            fallback_content = generate_fallback_content(i, doc_type)
-
-            filename = f"legal_doc_{i+1:04d}_{doc_type['name']}.txt"
-
-            document = {
-                "document_id": f"doc_{i+1:04d}",
-                "document_type": doc_type["name"],
-                "content": fallback_content,
-                "keywords": ", ".join(doc_type["keywords"]),
-                "filename": filename,
-                "generated_at": datetime.now(),
-            }
-
-            documents.append(document)
-
-    # Save documents to MinIO using Spark
-    try:
-        # Save as structured data (Parquet)
-        save_documents_to_minio(
-            spark_session, documents, "s3://data/docs/legal/parquet"
-        )
-
-        # Save as text files
-        save_documents_as_text_files(
-            spark_session, documents, "s3://data/docs/legal/text"
-        )
-
-    except Exception as e:
-        print(f"Error saving to MinIO: {e}")
-        # Fallback: save locally
-        local_output_dir = "data/docs/legal"
-        Path(local_output_dir).mkdir(parents=True, exist_ok=True)
-
-        for doc in documents:
-            filepath = os.path.join(local_output_dir, doc["filename"])
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(doc["content"])
-
-        print(f"Saved documents locally to {local_output_dir}")
+            # Continue with next document instead of using fallback content
+            continue
 
     # Print generation statistics
     print(f"\n=== Generation Complete ===")
-    print(f"Total documents generated: {num_docs}")
+    print(f"Total documents generated: {len(documents)}")
     print(f"Document type distribution:")
     for doc_type, count in doc_type_counts.items():
         percentage = (count / num_docs) * 100
         print(f"  {doc_type}: {count} ({percentage:.1f}%)")
-    print(f"Documents saved to MinIO: s3://data/docs/legal/")
+
+    return documents
 
 
-def generate_specific_document_type_with_spark(
-    doc_type_name, num_docs=100, spark_session=None
-):
+def generate_specific_document_type(
+    doc_type_name: str, num_docs: int = 100
+) -> List[Dict[str, Any]]:
     """
-    Generate documents of a specific type only and save to MinIO via Spark
+    Generate documents of a specific type only
 
     Args:
-        doc_type_name (str): Name of the document type to generate
-        num_docs (int): Number of documents to generate
-        spark_session: Optional SparkSession instance (will create one if not provided)
+        doc_type_name: Name of the document type to generate
+        num_docs: Number of documents to generate
+
+    Returns:
+        List of generated document dictionaries
     """
+    # Get specific document type
+    doc_type = get_legal_doc_type(doc_type_name)
+    if not doc_type:
+        raise ValueError(f"Invalid document type: {doc_type_name}")
 
-    # Use shared legal document types from legal_document_models.py
-    legal_doc_types = LEGAL_DOC_TYPES_DICT
-
-    if doc_type_name not in legal_doc_types:
-        print(f"Error: Unknown document type '{doc_type_name}'")
-        print(f"Available types: {list(legal_doc_types.keys())}")
-        return
-
-    doc_type = legal_doc_types[doc_type_name]
-
-    # Initialize SOLI components
-    try:
-        # Initialize SOLI graph
-        soli_graph = SOLI()
-
-        # Initialize template formatter
-        formatter = TemplateFormatter()
-
-        print("SOLI data generator initialized successfully.")
-    except Exception as e:
-        print(f"Error initializing SOLI: {e}")
-        print("Falling back to basic content generation.")
-        formatter = None
-
-    print(f"Generating {num_docs} {doc_type_name} documents and saving to MinIO...")
+    print(
+        f"Generating {num_docs} {doc_type_name} documents using template formatting..."
+    )
 
     documents = []
 
     for i in range(num_docs):
         try:
-            if formatter:
-                doc_generator = get_document_generator(doc_type["name"])
-                content = doc_generator(formatter, doc_type, i)
-            else:
-                content = generate_fallback_content(i, doc_type)
-
-            # Create filename
-            filename = f"{doc_type_name}_doc_{i+1:04d}.txt"
+            # Generate content using template formatting
+            content = generate_document_content(doc_type, i + 1)
 
             # Create document record
             document = {
                 "document_id": f"{doc_type_name}_{i+1:04d}",
                 "document_type": doc_type["name"],
                 "content": content,
-                "keywords": ", ".join(doc_type["keywords"]),
-                "filename": filename,
+                "keywords": doc_type["keywords"],
+                "filename": "",  # Will be set during save
+                "file_path": "",  # Will be set during save
+                "metadata_path": "",  # Will be set during save
                 "generated_at": datetime.now(),
             }
 
@@ -669,73 +472,35 @@ def generate_specific_document_type_with_spark(
                 print(f"Generated {i + 1} {doc_type_name} documents...")
 
         except Exception as e:
-            print(f"Error generating {doc_type_name} document {i+1}: {e}")
-            fallback_content = generate_fallback_content(i, doc_type)
+            print(f"Error generating document {i+1}: {e}")
+            # Continue with next document instead of using fallback content
+            continue
 
-            filename = f"{doc_type_name}_doc_{i+1:04d}.txt"
-
-            document = {
-                "document_id": f"{doc_type_name}_{i+1:04d}",
-                "document_type": doc_type["name"],
-                "content": fallback_content,
-                "keywords": ", ".join(doc_type["keywords"]),
-                "filename": filename,
-                "generated_at": datetime.now(),
-            }
-
-            documents.append(document)
-
-    # Save documents to MinIO using Spark
-    try:
-        # Save as structured data (Parquet)
-        save_documents_to_minio(
-            spark_session, documents, f"s3://data/docs/legal/{doc_type_name}/parquet"
-        )
-
-        # Save as text files
-        save_documents_as_text_files(
-            spark_session, documents, f"s3://data/docs/legal/{doc_type_name}/text"
-        )
-
-    except Exception as e:
-        print(f"Error saving to MinIO: {e}")
-        # Fallback: save locally
-        local_output_dir = f"data/docs/legal/{doc_type_name}"
-        Path(local_output_dir).mkdir(parents=True, exist_ok=True)
-
-        for doc in documents:
-            filepath = os.path.join(local_output_dir, doc["filename"])
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(doc["content"])
-
-        print(f"Saved documents locally to {local_output_dir}")
-
-    print(
-        f"Successfully generated and saved {num_docs} {doc_type_name} documents to MinIO"
-    )
+    print(f"Successfully generated {len(documents)} {doc_type_name} documents")
+    return documents
 
 
 def main(num_docs: int = 1000):
     """Main function to generate legal documents and save to MinIO"""
 
-    # Create Spark session
-    spark = create_spark_session(
-        spark_version=SparkVersion.SPARK_3_5,
-        app_name=Path(__file__).stem,
-        iceberg_config=IcebergConfig(),
-    )
-
     try:
         # Generate all document types randomly
-        generate_legal_documents_with_spark(num_docs=num_docs, spark_session=spark)
+        documents = generate_legal_documents(num_docs=num_docs)
+
+        if not documents:
+            print("No documents were generated successfully. Exiting.")
+            return
+
+        # Save documents to MinIO
+        save_documents_to_minio(documents, "data", "docs/legal")
 
         # Option: Generate specific document type only
-        # Uncomment the line below to generate only contracts
-        # generate_specific_document_type_with_spark("contract", num_docs=100, spark_session=spark)
+        # Uncomment the lines below to generate only contracts
+        # documents = generate_specific_document_type("contract", num_docs=100)
+        # save_documents_to_minio(documents, "data", "docs/legal")
 
-    finally:
-        # Stop Spark session
-        spark.stop()
+    except Exception as e:
+        print(f"Error in main execution: {e}")
 
 
 if __name__ == "__main__":

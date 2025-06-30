@@ -76,110 +76,6 @@ def extract_namespaces_from_ddl(ddl_dir):
     return list(namespaces)
 
 
-def extract_tables_from_ddl(ddl_dir):
-    """Extract all table names referenced in DDL files"""
-    tables = []
-
-    for ddl_file in ddl_dir.glob("*.sql"):
-        try:
-            with open(ddl_file, "r") as f:
-                content = f.read()
-
-            # Look for CREATE TABLE statements with namespace.table format
-            import re
-
-            # Handle both CREATE TABLE IF NOT EXISTS and CREATE OR REPLACE TABLE
-            matches = re.findall(
-                r"CREATE (?:TABLE IF NOT EXISTS|OR REPLACE TABLE) (\w+)\.(\w+)", content
-            )
-
-            for namespace, table_name in matches:
-                tables.append((namespace, table_name))
-
-        except Exception as e:
-            print(f"⚠️  Error reading {ddl_file}: {e}")
-
-    return tables
-
-
-def create_error_table(spark, namespace, table_name):
-    """Create an error table for the given table"""
-    error_table_name = f"{table_name}_error"
-    print(f"Creating error table: {namespace}.{error_table_name}")
-
-    # Generic error table schema that can handle most cases
-    error_table_sql = f"""
-    CREATE TABLE IF NOT EXISTS {namespace}.{error_table_name} (
-        original_record_id STRING,
-        original_data MAP<STRING, STRING>,  -- Changed from STRING to MAP for better queryability
-        error_message STRING,
-        error_type STRING,
-        quarantined_at TIMESTAMP,
-        source_table STRING,
-        processing_step STRING,
-        error_sequence INT,  -- For multiple errors per record (1, 2, 3, etc.)
-        metadata MAP<STRING, STRING>
-    )
-    USING iceberg
-    PARTITIONED BY (error_type, month(quarantined_at))
-    TBLPROPERTIES (
-        'write.format.default' = 'parquet',
-        'write.parquet.compression-codec' = 'zstd',
-        'write.merge.isolation-level' = 'snapshot',
-        'comment' = 'Error/quarantine table for {namespace}.{table_name} - supports multiple errors per record'
-    )
-    """
-
-    try:
-        spark.sql(error_table_sql)
-        print(f"✅ Successfully created error table: {namespace}.{error_table_name}")
-        return True
-    except Exception as e:
-        print(f"❌ Error creating error table {namespace}.{error_table_name}: {e}")
-        return False
-
-
-def create_specific_error_table_for_legal_documents(spark):
-    """Create a specific error table for legal documents with detailed schema"""
-    print("Creating specific error table for legal documents...")
-
-    legal_error_sql = """
-    CREATE TABLE IF NOT EXISTS legal.documents_error (
-        original_document_id STRING,
-        document_type STRING,
-        raw_text STRING,
-        generation_date TIMESTAMP,
-        file_path STRING,
-        document_length INT,
-        word_count INT,
-        language STRING,
-        metadata MAP<STRING, STRING>,
-        error_message STRING,
-        error_type STRING,
-        quarantined_at TIMESTAMP,
-        error_sequence INT,  -- For multiple errors per document (1, 2, 3, etc.)
-        field_name STRING,   -- Which specific field caused the error
-        field_value STRING   -- The problematic value
-    )
-    USING iceberg
-    PARTITIONED BY (error_type, month(quarantined_at))
-    TBLPROPERTIES (
-        'write.format.default' = 'parquet',
-        'write.parquet.compression-codec' = 'zstd',
-        'write.merge.isolation-level' = 'snapshot',
-        'comment' = 'Error/quarantine table for legal documents with detailed schema - supports multiple errors per document'
-    )
-    """
-
-    try:
-        spark.sql(legal_error_sql)
-        print("✅ Successfully created legal documents error table")
-        return True
-    except Exception as e:
-        print(f"❌ Error creating legal documents error table: {e}")
-        return False
-
-
 def main():
     """Main function to execute DDL statements"""
     app_name = Path(__file__).stem
@@ -228,27 +124,6 @@ def main():
                 print(f"❌ Failed to execute: {ddl_file}")
         except Exception as e:
             print(f"❌ Error executing {ddl_file}: {e}")
-
-    # Create error tables for all tables
-    print(f"\n{'='*50}")
-    print("CREATING ERROR TABLES")
-    print(f"{'='*50}")
-
-    tables = extract_tables_from_ddl(ddl_dir)
-
-    if tables:
-        print(f"Found tables: {tables}")
-        print("Creating error tables...")
-
-        for namespace, table_name in tables:
-            # Create specific error table for legal documents
-            if namespace == "legal" and table_name == "documents":
-                create_specific_error_table_for_legal_documents(spark)
-            else:
-                # Create generic error table for other tables
-                create_error_table(spark, namespace, table_name)
-    else:
-        print("No tables found in DDL files")
 
     print(f"\n{'='*50}")
     print("DDL execution complete!")

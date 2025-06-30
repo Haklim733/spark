@@ -22,7 +22,6 @@ CREATE OR REPLACE TABLE nyc_taxi_data.yellow_tripdata (
     congestion_surcharge DOUBLE,
     airport_fee DOUBLE
 )
-USING iceberg
 PARTITIONED BY (month(tpep_pickup_datetime))
 TBLPROPERTIES (
     'write.format.default' = 'parquet',

@@ -3,7 +3,8 @@
 Script to generate legal text documents using template formatting with Faker data.
 Uses Python MinIO library to save documents in structured format: /docs/legal/{doc_type}/{date}/{uuid}.txt
 Also creates separate JSON metadata files: /docs/legal/{doc_type}/{date}/{uuid}.json
-Implements data validation using schemas from models.py
+Implements data validation using schemas from schema.py
+Parallelization using spark not used because of the subfolder creation
 """
 
 import random
@@ -11,7 +12,7 @@ import uuid
 import json
 import io
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any
 
 from faker import Faker
@@ -21,14 +22,13 @@ from minio import Minio
 from minio.error import S3Error
 
 # Import shared legal document models and validation
-from models import (
-    get_all_legal_doc_types,
-    get_legal_doc_type,
-    validate_legal_document_metadata,
-)
+from schemas.schema import SchemaManager
 
 # Initialize Faker
 fake = Faker()
+
+# Initialize SchemaManager
+schema_manager = SchemaManager()
 
 
 def create_minio_client() -> Minio:
@@ -39,7 +39,7 @@ def create_minio_client() -> Minio:
         Minio: Configured MinIO client
     """
     minio_client = Minio(
-        "localhost:9000",
+        "minio:9000",
         access_key="admin",
         secret_key="password",
         secure=False,  # HTTP for local development
@@ -66,109 +66,71 @@ def generate_template_data(
     doc_type: Dict[str, Any], document_number: int
 ) -> Dict[str, Any]:
     """
-    Generate template data for document generation using Faker for realistic data
+    Generate template data for document formatting
 
     Args:
         doc_type: Document type configuration
-        document_number: Document number for this generation
+        document_number: Document number
 
     Returns:
-        Dictionary with template variables
+        Dictionary with template data
     """
-    current_date = datetime.now().strftime("%Y-%m-%d")
-    current_year = datetime.now().year
+    # Generate realistic data using Faker
+    fake = Faker()
 
-    # Generate realistic names and data using Faker
+    # Company and business data
     company_name = fake.company()
-    attorney_name = fake.name()
-    party_a_name = fake.name()
-    party_b_name = fake.name()
-    department_head = fake.name()
+    company_email = fake.company_email()
     company_address = fake.address()
     company_phone = fake.phone_number()
-    company_email = fake.company_email()
 
-    # Generate industry-specific data
-    industries = [
-        "Technology",
-        "Healthcare",
-        "Finance",
-        "Manufacturing",
-        "Retail",
-        "Consulting",
-        "Real Estate",
-        "Education",
-    ]
-    selected_industry = random.choice(industries)
-
-    # Generate business types based on industry
-    business_types = {
-        "Technology": [
-            "software development",
-            "IT consulting",
-            "cybersecurity",
-            "data analytics",
-        ],
-        "Healthcare": [
-            "medical services",
-            "pharmaceuticals",
-            "healthcare consulting",
-            "medical devices",
-        ],
-        "Finance": [
-            "investment banking",
-            "asset management",
-            "insurance",
-            "financial consulting",
-        ],
-        "Manufacturing": ["automotive", "electronics", "chemicals", "textiles"],
-        "Retail": ["e-commerce", "brick-and-mortar", "wholesale", "fashion"],
-        "Consulting": [
-            "management consulting",
-            "strategy consulting",
-            "operations consulting",
-            "technology consulting",
-        ],
-        "Real Estate": [
-            "property development",
-            "property management",
-            "real estate investment",
-            "commercial leasing",
-        ],
-        "Education": [
-            "higher education",
-            "K-12 education",
-            "online learning",
-            "educational technology",
-        ],
-    }
-
-    business_type = random.choice(
-        business_types.get(selected_industry, ["general business"])
+    # Business details
+    business_type = fake.random_element(
+        ["Corporation", "LLC", "Partnership", "Sole Proprietorship"]
+    )
+    selected_industry = fake.random_element(
+        [
+            "Technology",
+            "Healthcare",
+            "Finance",
+            "Manufacturing",
+            "Retail",
+            "Real Estate",
+            "Education",
+            "Consulting",
+        ]
     )
 
-    # Base template data
+    # Legal personnel
+    attorney_name = fake.name()
+    department_head = fake.name()
+
+    # Parties for contracts
+    party_a_name = fake.company()
+    party_b_name = fake.company()
+
+    # Dates
+    current_date = fake.date_between(start_date="-1y", end_date="today").strftime(
+        "%Y-%m-%d"
+    )
+    current_year = datetime.now().year
+
     template_data = {
         "document_number": f"{document_number:04d}",
         "date": current_date,
         "company": company_name,
         "industry": selected_industry,
-        "keywords": ", ".join(doc_type["keywords"]),
-        "legal_area": doc_type["keywords"][0] if doc_type["keywords"] else "General",
-        "compliance_area": (
-            doc_type["keywords"][0] if doc_type["keywords"] else "General"
-        ),
-        "training_area": doc_type["keywords"][0] if doc_type["keywords"] else "General",
-        "guidance_area": doc_type["keywords"][0] if doc_type["keywords"] else "General",
-        "practice_area": doc_type["keywords"][0] if doc_type["keywords"] else "General",
-        "risk_area": doc_type["keywords"][0] if doc_type["keywords"] else "General",
-        "concern_area": doc_type["keywords"][0] if doc_type["keywords"] else "General",
-        "documentation_area": (
-            doc_type["keywords"][0] if doc_type["keywords"] else "General"
-        ),
-        "legal_matter": doc_type["keywords"][0] if doc_type["keywords"] else "General",
-        "policy_type": doc_type["keywords"][0] if doc_type["keywords"] else "General",
-        "subject": doc_type["keywords"][0] if doc_type["keywords"] else "Legal",
+        "legal_area": "General",
+        "compliance_area": "General",
+        "training_area": "General",
+        "guidance_area": "General",
+        "practice_area": "General",
+        "risk_area": "General",
+        "concern_area": "General",
+        "documentation_area": "General",
+        "legal_matter": "General",
+        "policy_type": "General",
+        "subject": "Legal",
         "to_recipient": f"Legal Department - {department_head}",
         "from_author": attorney_name,
         "attorney_name": attorney_name,
@@ -185,12 +147,8 @@ def generate_template_data(
         "party_a": party_a_name,
         "party_b": party_b_name,
         "business_type": business_type,
-        "service_area": (
-            doc_type["keywords"][0]
-            if doc_type["keywords"]
-            else "general legal services"
-        ),
-        "service_type": doc_type["keywords"][0] if doc_type["keywords"] else "legal",
+        "service_area": "general legal services",
+        "service_type": "legal",
         "hourly_rate": f"${random.randint(100, 300)}",
         "notice_period": f"{random.randint(15, 60)} days",
     }
@@ -226,37 +184,75 @@ def generate_document_content(doc_type: Dict[str, Any], document_number: int) ->
 
 def create_document_metadata(doc: Dict[str, Any], doc_uuid: str) -> Dict[str, Any]:
     """
-    Create metadata dictionary for a document
-
-    Args:
-        doc: Document dictionary
-        doc_uuid: UUID of the document
-
-    Returns:
-        Dict containing document metadata
+    Create metadata dictionary with UTC timestamps using Z suffix
     """
-    metadata = {
-        "document_id": doc["document_id"],
-        "document_type": doc["document_type"],
-        "uuid": doc_uuid,
-        "content_filename": f"{doc_uuid}.txt",
-        "metadata_filename": f"{doc_uuid}.json",
-        "keywords": doc["keywords"],
-        "generated_at": (
-            doc["generated_at"].isoformat()
-            if isinstance(doc["generated_at"], datetime)
-            else str(doc["generated_at"])
-        ),
-        "content_length": len(doc["content"]),
-        "content_preview": (
-            doc["content"][:200] + "..."
-            if len(doc["content"]) > 200
-            else doc["content"]
-        ),
-        "processing_timestamp": datetime.now().isoformat(),
-        "source": "soli_legal_document_generator",
-        "metadata_version": "1.0",
-    }
+    # Get the metadata schema to understand required fields
+    metadata_schema = schema_manager.get_schema("legal_doc_metadata")
+    if not metadata_schema:
+        raise ValueError("Could not load legal_doc_metadata schema")
+
+    # Get required fields from schema
+    required_fields = schema_manager.get_required_fields("legal_doc_metadata")
+
+    # Get schema properties to understand field types and defaults
+    properties = metadata_schema.get("properties", {})
+
+    # Build metadata dynamically based on schema
+    metadata = {}
+
+    # Handle each required field based on schema definition
+    for field_name in required_fields:
+        if field_name == "document_id":
+            metadata[field_name] = doc["document_id"]
+        elif field_name == "document_type":
+            metadata[field_name] = doc["document_type"]
+        elif field_name == "content_length":
+            metadata[field_name] = len(doc["content"])
+        elif field_name == "generated_at":
+            # Ensure UTC timestamp in ISO-8601 format with Z suffix
+            generated_at = doc["generated_at"]
+            if isinstance(generated_at, datetime):
+                # Convert to UTC if not already
+                if generated_at.tzinfo is None:
+                    generated_at = generated_at.replace(tzinfo=timezone.utc)
+                elif generated_at.tzinfo != timezone.utc:
+                    generated_at = generated_at.astimezone(timezone.utc)
+
+                # Format with Z suffix (not +00:00)
+                metadata[field_name] = (
+                    generated_at.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+                )
+            else:
+                # If it's already a string, ensure it ends with Z
+                if isinstance(generated_at, str):
+                    if generated_at.endswith("+00:00"):
+                        generated_at = generated_at.replace("+00:00", "Z")
+                    elif not generated_at.endswith("Z"):
+                        # Try to parse and reformat
+                        try:
+                            dt = datetime.fromisoformat(
+                                generated_at.replace("Z", "+00:00")
+                            )
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            else:
+                                dt = dt.astimezone(timezone.utc)
+                            generated_at = (
+                                dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+                            )
+                        except:
+                            pass  # Keep original if parsing fails
+                metadata[field_name] = generated_at
+        elif field_name == "source":
+            # Use default from schema if available
+            field_props = properties.get(field_name, {})
+            default_value = field_props.get("default", "soli_legal_document_generator")
+            metadata[field_name] = default_value
+        else:
+            # For any other fields, try to get from doc or use schema default
+            field_props = properties.get(field_name, {})
+            default_value = field_props.get("default")
+            metadata[field_name] = doc.get(field_name, default_value)
 
     return metadata
 
@@ -289,13 +285,11 @@ def save_documents_to_minio(
     # Save each document individually with structured path
     for i, doc in enumerate(documents):
         doc_type = doc["document_type"]
-
-        # Generate UUID for filename
-        doc_uuid = str(uuid.uuid4())
+        doc_id = doc["document_id"]
 
         # Create file paths
-        content_filename = f"{doc_uuid}.txt"
-        metadata_filename = f"{doc_uuid}.json"
+        content_filename = f"{doc_id}.txt"
+        metadata_filename = f"{doc_id}.json"
 
         content_path = f"{base_path}/{doc_type}/{current_date}/{content_filename}"
         metadata_path = f"{base_path}/{doc_type}/{current_date}/{metadata_filename}"
@@ -305,12 +299,10 @@ def save_documents_to_minio(
         content_bytes = content.encode("utf-8")
 
         # Create metadata
-        metadata = create_document_metadata(doc, doc_uuid)
-        metadata["content_file_path"] = f"s3://{bucket_name}/{content_path}"
-        metadata["metadata_file_path"] = f"s3://{bucket_name}/{metadata_path}"
+        metadata = create_document_metadata(doc, doc_id)
 
         # Validate metadata before saving
-        if not validate_legal_document_metadata(metadata):
+        if not schema_manager.validate_legal_document_metadata(metadata):
             print(
                 f"❌ Metadata validation failed for document {doc['document_id']} - Skipping save."
             )
@@ -364,16 +356,10 @@ def save_documents_to_minio(
 
 def generate_legal_documents(num_docs: int = 1000) -> List[Dict[str, Any]]:
     """
-    Generate legal documents using template formatting
-
-    Args:
-        num_docs: Number of documents to generate
-
-    Returns:
-        List of generated document dictionaries
+    Generate legal documents with UTC timestamps
     """
     # Get legal document types from models
-    legal_doc_types = get_all_legal_doc_types()
+    legal_doc_types = schema_manager.get_all_legal_doc_types()
 
     print(f"Generating {num_docs} legal documents using template formatting...")
 
@@ -392,16 +378,15 @@ def generate_legal_documents(num_docs: int = 1000) -> List[Dict[str, Any]]:
             # Generate content using template formatting
             content = generate_document_content(doc_type, i + 1)
 
-            # Create document record
+            # Create document record with UTC timestamp
             document = {
                 "document_id": f"doc_{i+1:04d}",
                 "document_type": doc_type["name"],
                 "content": content,
-                "keywords": doc_type["keywords"],
-                "filename": "",  # Will be set during save
-                "file_path": "",  # Will be set during save
-                "metadata_path": "",  # Will be set during save
-                "generated_at": datetime.now(),
+                "filename": "",
+                "file_path": "",
+                "metadata_path": "",
+                "generated_at": datetime.now(timezone.utc),  # UTC timestamp
             }
 
             documents.append(document)
@@ -439,7 +424,7 @@ def generate_specific_document_type(
         List of generated document dictionaries
     """
     # Get specific document type
-    doc_type = get_legal_doc_type(doc_type_name)
+    doc_type = schema_manager.get_legal_doc_type(doc_type_name)
     if not doc_type:
         raise ValueError(f"Invalid document type: {doc_type_name}")
 
@@ -459,7 +444,6 @@ def generate_specific_document_type(
                 "document_id": f"{doc_type_name}_{i+1:04d}",
                 "document_type": doc_type["name"],
                 "content": content,
-                "keywords": doc_type["keywords"],
                 "filename": "",  # Will be set during save
                 "file_path": "",  # Will be set during save
                 "metadata_path": "",  # Will be set during save

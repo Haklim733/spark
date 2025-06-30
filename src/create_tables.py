@@ -2,6 +2,7 @@
 """
 DDL Executor for Iceberg Tables using Spark SQL
 Executes SQL DDL statements to create Iceberg tables
+Supports both traditional DDL files and SchemaManager-based table creation
 """
 
 from pathlib import Path
@@ -16,12 +17,16 @@ def execute_ddl_file(ddl_file_path, spark):
     with open(ddl_file_path, "r") as f:
         sql_content = f.read()
 
-    # Remove comments and clean up SQL
+    # Process SQL content to handle comments properly
     lines = []
     for line in sql_content.split("\n"):
         line = line.strip()
         if line and not line.startswith("--"):
-            lines.append(line)
+            # Remove inline comments (everything after --)
+            if "--" in line:
+                line = line.split("--")[0].strip()
+            if line:  # Only add non-empty lines
+                lines.append(line)
 
     sql_statement = " ".join(lines)
 
@@ -77,7 +82,7 @@ def extract_namespaces_from_ddl(ddl_dir):
 
 
 def main():
-    """Main function to execute DDL statements"""
+    """Main function to execute DDL statements and create tables from schemas"""
     app_name = Path(__file__).stem
 
     # Create Spark session with Iceberg
@@ -94,6 +99,10 @@ def main():
         return
 
     # Extract and create all required namespaces
+    print(f"\n{'='*50}")
+    print("Processing traditional DDL files...")
+    print(f"{'='*50}")
+
     print("Detecting required namespaces...")
     required_namespaces = extract_namespaces_from_ddl(ddl_dir)
 
@@ -126,7 +135,7 @@ def main():
             print(f"❌ Error executing {ddl_file}: {e}")
 
     print(f"\n{'='*50}")
-    print("DDL execution complete!")
+    print("Table creation complete!")
     print(f"{'='*50}")
 
     spark.stop()

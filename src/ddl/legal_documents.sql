@@ -1,32 +1,29 @@
 -- Legal Documents Table DDL for ELT approach
--- This table stores raw legal documents before transformation
+-- This table stores raw legal documents with metadata as individual columns
 
-CREATE OR REPLACE TABLE legal.documents_raw (
+CREATE OR REPLACE TABLE legal.documents (
+    -- Core document fields
     document_id STRING,
     document_type STRING,
     raw_text STRING,
-    raw_metadata STRING,  -- JSON string for ELT approach
+    generated_at TIMESTAMP,
+    source STRING,
     file_path STRING,
-    metadata_file_path STRING,  -- Path to the separate metadata JSON file
-    document_length BIGINT,
-    word_count BIGINT,
-    language STRING,
-    load_timestamp TIMESTAMP,
-    source_system STRING,
-    load_status STRING,
-    load_error STRING,
-    -- Additional metadata fields from document generation
-    uuid STRING,  -- UUID used for filename
-    content_filename STRING,  -- The .txt filename
-    metadata_filename STRING,  -- The .json filename
-    processing_timestamp STRING,  -- When the document was processed
-    metadata_version STRING  -- Version of metadata schema
+    language STRING,  
+    content_length BIGINT,
+    
+    -- Schema version tracking
+    schema_version STRING,
+    
+    -- ELT Load tracking fields
+    load_batch_id STRING,
+    load_timestamp TIMESTAMP
 )
 USING iceberg
-PARTITIONED BY (document_type, month(load_timestamp))
+PARTITIONED BY (document_type, month(generated_at))
 TBLPROPERTIES (
     'write.format.default' = 'parquet',
     'write.parquet.compression-codec' = 'zstd',
     'write.merge.isolation-level' = 'snapshot',
-    'comment' = 'Raw legal documents for ELT processing - stores both content and metadata'
+    'comment' = 'Raw legal documents with metadata as individual columns for ELT processing'
 ); 

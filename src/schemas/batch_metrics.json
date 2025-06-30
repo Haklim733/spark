@@ -1,0 +1,148 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Batch Metrics Schema for ELT Pipeline",
+  "description": "Schema for batch-level metrics in ELT pipeline. Focuses on load status, performance, and operational metrics without arbitrary quality scores.",
+  "schema_version": "v1",
+  "type": "object",
+  "properties": {
+    "load_batch_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "description": "Unique batch identifier for tracking and reprocessing"
+    },
+    "load_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the batch was loaded"
+    },
+    "load_source": {
+      "type": "string",
+      "enum": ["local", "minio", "s3", "hdfs", "api"],
+      "description": "Source system identifier"
+    },
+    "load_job_id": {
+      "type": "string",
+      "description": "Job/process identifier for operational tracking"
+    },
+    "load_version": {
+      "type": "string",
+      "description": "Schema/process version for compatibility tracking"
+    },
+    "target_table": {
+      "type": "string",
+      "description": "Target table name for the batch load"
+    },
+    "metadata_schema_version": {
+      "type": "string",
+      "description": "Version of metadata schema used for the loaded data"
+    },
+    "files_processed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of files processed in this batch"
+    },
+    "files_loaded": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of files successfully loaded"
+    },
+    "files_failed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of files that failed to load"
+    },
+    "files_missing": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of files that were expected but not found/processed"
+    },
+    "files_successful": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of files that loaded successfully (same as files_loaded)"
+    },
+    "total_records_processed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of records processed (usually same as files_processed for one file per row)"
+    },
+    "total_records_loaded": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of records successfully loaded"
+    },
+    "total_records_failed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of records that failed to load"
+    },
+    "total_records_missing": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of records that were expected but not found"
+    },
+    "load_duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total load duration in milliseconds"
+    },
+    "total_file_size_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total size of all files processed in bytes"
+    },
+    "avg_processing_rate": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Average processing rate in files per second"
+    },
+    "error_codes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "description": "Distribution of error codes encountered during load"
+    },
+    "error_summary": {
+      "type": "string",
+      "description": "Human-readable summary of load results"
+    },
+    "validation_status": {
+      "type": "string",
+      "enum": ["complete_success", "partial_load", "load_failures", "unknown"],
+      "description": "Overall validation status of the batch"
+    },
+    "created_by": {
+      "type": "string",
+      "description": "User/system that initiated the load"
+    }
+  },
+  "required": [
+    "load_batch_id",
+    "load_timestamp",
+    "load_source",
+    "target_table",
+    "files_processed",
+    "files_loaded",
+    "files_failed",
+    "load_duration_ms",
+    "validation_status"
+  ],
+  "definitions": {
+    "error_code": {
+      "type": "string",
+      "enum": [
+        "E001",
+        "E002", 
+        "E003",
+        "E004",
+        "E005",
+        "E006",
+        "E007",
+        "E999"
+      ],
+      "description": "Standardized error codes: E001=FILE_NOT_FOUND, E002=PERMISSION_DENIED, E003=INVALID_FORMAT, E004=SCHEMA_MISMATCH, E005=NETWORK_ERROR, E006=TIMEOUT, E007=MEMORY_ERROR, E999=UNKNOWN_ERROR"
+    }
+  }
+} 

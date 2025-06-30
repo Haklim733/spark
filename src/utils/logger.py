@@ -7,31 +7,197 @@ import threading
 import time
 from typing import Dict, Any, Optional
 from pyspark.sql import SparkSession
-import functools
+from utils.session import create_spark_session
+from datetime import datetime
+from enum import Enum
+
+
+class MetricsTracker:
+    def __init__(self, spark: SparkSession):
+        self.metrics = {}
+        self.current_job_group = None
+        self.current_operation = None
+
+    def start_operation(self, job_group: str, operation: str):
+        """Start tracking metrics for a new operation"""
+        self.current_job_group = job_group
+        self.current_operation = operation
+        if job_group not in self.metrics:
+            self.metrics[job_group] = {}
+        if operation not in self.metrics[job_group]:
+            self.metrics[job_group][operation] = {
+                "start_time": time.time(),
+                "data_skew_ratio": 0,
+                "partition_count": 0,
+                "record_count": 0,
+                "unique_keys": 0,
+                "max_key_frequency": 0,
+                "min_key_frequency": 0,
+                "shuffle_partitions": 0,
+                "memory_usage_mb": 0,
+                "execution_plan_complexity": "low",
+            }
+
+    def record_data_metrics(self, spark: SparkSession, table_name: str = "skewed_data"):
+        """Record data distribution metrics and output to Spark logs"""
+        if not self.current_job_group or not self.current_operation:
+            return
+
+        try:
+            # Get data distribution
+            distribution_df = spark.sql(
+                f"""
+                SELECT key, COUNT(*) as frequency
+                FROM {table_name}
+                GROUP BY key
+                ORDER BY frequency DESC
+            """
+            )
+
+            distribution = distribution_df.collect()
+
+            if distribution:
+                frequencies = [row["frequency"] for row in distribution]
+                max_freq = max(frequencies)
+                min_freq = min(frequencies)
+                total_records = sum(frequencies)
+                unique_keys = len(frequencies)
+
+                # Calculate skew ratio (max frequency / average frequency)
+                avg_freq = total_records / unique_keys
+                skew_ratio = max_freq / avg_freq if avg_freq > 0 else 0
+
+                # Get partition count
+                partition_count = spark.sql(
+                    f"SELECT COUNT(DISTINCT key) as partitions FROM {table_name}"
+                ).collect()[0]["partitions"]
+
+                # Get shuffle partitions setting
+                shuffle_partitions = spark.conf.get(
+                    "spark.sql.shuffle.partitions", "200"
+                )
+
+                # Get memory configuration
+                executor_memory = spark.conf.get("spark.executor.memory", "1g")
+                driver_memory = spark.conf.get("spark.driver.memory", "1g")
+                memory_fraction = spark.conf.get("spark.memory.fraction", "0.6")
+                storage_fraction = spark.conf.get("spark.memory.storageFraction", "0.5")
+
+                # Calculate memory usage (approximate)
+                estimated_memory_mb = (total_records * 100) / (
+                    1024 * 1024
+                )  # Rough estimate: 100 bytes per record
+
+                # Update metrics
+                self.metrics[self.current_job_group][self.current_operation].update(
+                    {
+                        "data_skew_ratio": round(skew_ratio, 2),
+                        "partition_count": partition_count,
+                        "record_count": total_records,
+                        "unique_keys": unique_keys,
+                        "max_key_frequency": max_freq,
+                        "min_key_frequency": min_freq,
+                        "shuffle_partitions": int(shuffle_partitions),
+                        "execution_plan_complexity": (
+                            "high"
+                            if unique_keys > 1000
+                            else "medium" if unique_keys > 100 else "low"
+                        ),
+                        "executor_memory": executor_memory,
+                        "driver_memory": driver_memory,
+                        "memory_fraction": float(memory_fraction),
+                        "storage_fraction": float(storage_fraction),
+                        "estimated_memory_mb": round(estimated_memory_mb, 2),
+                    }
+                )
+
+        except Exception as e:
+            pass
+
+    def end_operation(
+        self, spark: SparkSession, execution_time: float, result_count: int = 0
+    ):
+        """End tracking metrics for current operation and output to Spark logs"""
+        if not self.current_job_group or not self.current_operation:
+            return
+
+        self.metrics[self.current_job_group][self.current_operation].update(
+            {
+                "execution_time": round(execution_time, 2),
+                "result_count": result_count,
+                "end_time": time.time(),
+            }
+        )
+
+    def get_metrics(self) -> Dict:
+        """Get all recorded metrics"""
+        return self.metrics
+
+    def save_metrics(self, filename: str = "shuffling_metrics.json"):
+        """Save metrics to JSON file (kept for backward compatibility)"""
+        try:
+            with open(filename, "w") as f:
+                json.dump(self.metrics, f, indent=2)
+            print(f"Metrics saved to {filename}")
+        except Exception as e:
+            pass
+
+    def get_logging_performance_summary(self) -> Dict:
+        """Get performance summary of the logging system"""
+        return {}
+
+    def shutdown(self):
+        """Shutdown the metrics tracker"""
+        pass
+
 
 class HybridLogger:
     """
-    Hybrid logging system combining Spark's built-in logging with asynchronous Python logging
-    for optimal performance and debugging capabilities.
+    Hybrid logging system that can optionally manage Spark sessions
     """
 
     def __init__(
         self,
-        spark: SparkSession,
-        app_name: str = "HybridApp",
+        spark: Optional[SparkSession] = None,
+        app_name: str = "App",
+        spark_config: dict = None,
+        manage_spark: bool = False,
         buffer_size: int = 1000,
         flush_interval: int = 5,
         enable_async: bool = True,
     ):
-        self.spark = spark
         self.app_name = app_name
-        self.job_id = spark.sparkContext.applicationId
-        self.enable_async = enable_async
+        self.spark_config = spark_config or {}
+        self.manage_spark = manage_spark
 
-        # Setup Spark logger for performance metrics (synchronous)
-        self.spark_logger = (
-            spark.sparkContext._jvm.org.apache.log4j.LogManager.getLogger(app_name)
-        )
+        # Create Spark session if managing it
+        if manage_spark and spark is None:
+            self.spark = create_spark_session(app_name=app_name, **self.spark_config)
+            self._owns_spark = True
+        else:
+            self.spark = spark
+            self._owns_spark = False
+
+        # Always create MetricsTracker if spark is provided
+        if self.spark is not None:
+            self.metrics_tracker = MetricsTracker(self.spark)
+        else:
+            self.metrics_tracker = None
+
+        # Handle case where spark is None
+        if self.spark is not None:
+            self.job_id = self.spark.sparkContext.applicationId
+            # Setup Spark logger for performance metrics (synchronous)
+            self.spark_logger = (
+                self.spark.sparkContext._jvm.org.apache.log4j.LogManager.getLogger(
+                    app_name
+                )
+            )
+        else:
+            self.job_id = f"{app_name}_{int(time.time())}"
+            self.spark_logger = None
+
+        self.enable_async = enable_async
 
         # Setup async Python logger for business events
         if enable_async:
@@ -121,7 +287,15 @@ class HybridLogger:
             "timestamp": int(time.time() * 1000),
             **metrics,
         }
-        self.spark_logger.info(f"PERFORMANCE_METRICS: {json.dumps(structured_metrics)}")
+
+        if self.spark_logger is not None:
+            self.spark_logger.info(
+                f"PERFORMANCE_METRICS: {json.dumps(structured_metrics)}"
+            )
+        else:
+            # Fallback to Python logger when Spark logger is not available
+            python_logger = self._setup_python_logger()
+            python_logger.info(f"PERFORMANCE_METRICS: {json.dumps(structured_metrics)}")
 
     def log_business_event(self, event_type: str, event_data: dict):
         """
@@ -192,7 +366,8 @@ class HybridLogger:
             error_data.update(context)
 
         # Log errors synchronously to both systems
-        self.spark_logger.error(f"ERROR: {json.dumps(error_data)}")
+        if self.spark_logger is not None:
+            self.spark_logger.error(f"ERROR: {json.dumps(error_data)}")
 
         # Also log to Python logger synchronously for errors
         python_logger = self._setup_python_logger()
@@ -215,7 +390,14 @@ class HybridLogger:
             "Metrics": metrics,
         }
 
-        self.spark_logger.info(f"CUSTOM_METRICS: {json.dumps(custom_metrics_event)}")
+        if self.spark_logger is not None:
+            self.spark_logger.info(
+                f"CUSTOM_METRICS: {json.dumps(custom_metrics_event)}"
+            )
+        else:
+            # Fallback to Python logger when Spark logger is not available
+            python_logger = self._setup_python_logger()
+            python_logger.info(f"CUSTOM_METRICS: {json.dumps(custom_metrics_event)}")
 
     def log_operation_completion(
         self,
@@ -242,7 +424,8 @@ class HybridLogger:
             "Result Count": result_count,
         }
 
-        self.spark_logger.info(f"CUSTOM_COMPLETION: {json.dumps(completion_event)}")
+        if self.spark_logger:
+            self.spark_logger.info(f"CUSTOM_COMPLETION: {json.dumps(completion_event)}")
 
     def log_batch_metrics(
         self, batch_id: int, record_count: int, processing_time: float
@@ -286,328 +469,96 @@ class HybridLogger:
         }
 
     def shutdown(self):
-        """Shutdown async logger gracefully"""
-        if self.enable_async:
-            self.running = False
-            if self.log_thread.is_alive():
-                self.log_thread.join(timeout=5)
-
-
-class MetricsTracker:
-    def __init__(self, spark: SparkSession):
-        self.metrics = {}
-        self.current_job_group = None
-        self.current_operation = None
-        # Initialize hybrid logger
-        self.logger = HybridLogger(spark, "MetricsTracker", enable_async=True)
-
-    def start_operation(self, job_group: str, operation: str):
-        """Start tracking metrics for a new operation"""
-        self.current_job_group = job_group
-        self.current_operation = operation
-        if job_group not in self.metrics:
-            self.metrics[job_group] = {}
-        if operation not in self.metrics[job_group]:
-            self.metrics[job_group][operation] = {
-                "start_time": time.time(),
-                "data_skew_ratio": 0,
-                "partition_count": 0,
-                "record_count": 0,
-                "unique_keys": 0,
-                "max_key_frequency": 0,
-                "min_key_frequency": 0,
-                "shuffle_partitions": 0,
-                "memory_usage_mb": 0,
-                "execution_plan_complexity": "low",
-            }
-
-        # Log operation start asynchronously
-        self.logger.log_business_event(
-            "operation_started",
+        """Shutdown logger, metrics tracker, and Spark session gracefully"""
+        # Log shutdown start
+        self.log_performance(
+            "logger_shutdown",
             {
-                "job_group": job_group,
-                "operation": operation,
-                "start_time": int(time.time() * 1000),
+                "app_name": self.app_name,
+                "owns_spark": self._owns_spark,
+                "total_logs": self.log_count,
             },
         )
 
-    def record_data_metrics(self, spark: SparkSession, table_name: str = "skewed_data"):
-        """Record data distribution metrics and output to Spark logs"""
-        if not self.current_job_group or not self.current_operation:
-            return
+        # 1. Shutdown metrics tracker
+        if self.metrics_tracker is not None:
+            try:
+                self.metrics_tracker.shutdown()
+                self.metrics_tracker = None
+            except Exception as e:
+                self.log_error(e, {"operation": "metrics_tracker_shutdown"})
 
-        try:
-            # Get data distribution
-            distribution_df = spark.sql(
-                f"""
-                SELECT key, COUNT(*) as frequency
-                FROM {table_name}
-                GROUP BY key
-                ORDER BY frequency DESC
-            """
-            )
+        # 2. Shutdown async logger
+        if self.enable_async:
+            self.running = False
+            if hasattr(self, "log_thread") and self.log_thread.is_alive():
+                self.log_thread.join(timeout=5)
 
-            distribution = distribution_df.collect()
+        # 3. Shutdown Spark session if we own it
+        if self._owns_spark and self.spark is not None:
+            try:
+                self.spark.stop()
+                self.spark = None
+            except Exception as e:
+                # Use print since logger might be shut down
+                print(f"Error shutting down Spark session: {e}")
 
-            if distribution:
-                frequencies = [row["frequency"] for row in distribution]
-                max_freq = max(frequencies)
-                min_freq = min(frequencies)
-                total_records = sum(frequencies)
-                unique_keys = len(frequencies)
+    def _serialize_config(self, config: dict) -> dict:
+        """Convert config to JSON-serializable format"""
 
-                # Calculate skew ratio (max frequency / average frequency)
-                avg_freq = total_records / unique_keys
-                skew_ratio = max_freq / avg_freq if avg_freq > 0 else 0
+        def serialize_value(value):
+            if isinstance(value, Enum):
+                return value.value
+            elif isinstance(value, datetime):
+                return value.isoformat()
+            elif hasattr(value, "__dict__"):
+                return str(value)
+            elif isinstance(value, dict):
+                return {k: serialize_value(v) for k, v in value.items()}
+            elif isinstance(value, (list, tuple)):
+                return [serialize_value(v) for v in value]
+            else:
+                return value
 
-                # Get partition count
-                partition_count = spark.sql(
-                    f"SELECT COUNT(DISTINCT key) as partitions FROM {table_name}"
-                ).collect()[0]["partitions"]
+        return serialize_value(config)
 
-                # Get shuffle partitions setting
-                shuffle_partitions = spark.conf.get(
-                    "spark.sql.shuffle.partitions", "200"
-                )
+    def __enter__(self):
+        """Context manager entry"""
+        # Log startup with serializable config
+        self.log_performance(
+            "logger_startup",
+            {
+                "app_name": self.app_name,
+                "owns_spark": self._owns_spark,
+                "spark_config": self._serialize_config(self.spark_config),
+            },
+        )
+        return self
 
-                # Get memory configuration
-                executor_memory = spark.conf.get("spark.executor.memory", "1g")
-                driver_memory = spark.conf.get("spark.driver.memory", "1g")
-                memory_fraction = spark.conf.get("spark.memory.fraction", "0.6")
-                storage_fraction = spark.conf.get("spark.memory.storageFraction", "0.5")
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures graceful shutdown"""
+        self.shutdown()
 
-                # Calculate memory usage (approximate)
-                # This is a rough estimate based on data size and operations
-                estimated_memory_mb = (total_records * 100) / (
-                    1024 * 1024
-                )  # Rough estimate: 100 bytes per record
-
-                # Update metrics
-                self.metrics[self.current_job_group][self.current_operation].update(
-                    {
-                        "data_skew_ratio": round(skew_ratio, 2),
-                        "partition_count": partition_count,
-                        "record_count": total_records,
-                        "unique_keys": unique_keys,
-                        "max_key_frequency": max_freq,
-                        "min_key_frequency": min_freq,
-                        "shuffle_partitions": int(shuffle_partitions),
-                        "execution_plan_complexity": (
-                            "high"
-                            if unique_keys > 1000
-                            else "medium" if unique_keys > 100 else "low"
-                        ),
-                        "executor_memory": executor_memory,
-                        "driver_memory": driver_memory,
-                        "memory_fraction": float(memory_fraction),
-                        "storage_fraction": float(storage_fraction),
-                        "estimated_memory_mb": round(estimated_memory_mb, 2),
-                    }
-                )
-
-                # Use hybrid logger for custom metrics
-                metrics_data = {
-                    "data_skew_ratio": round(skew_ratio, 2),
-                    "partition_count": partition_count,
-                    "record_count": total_records,
-                    "unique_keys": unique_keys,
-                    "max_key_frequency": max_freq,
-                    "min_key_frequency": min_freq,
-                    "shuffle_partitions": int(shuffle_partitions),
-                    "execution_plan_complexity": (
-                        "high"
-                        if unique_keys > 1000
-                        else "medium" if unique_keys > 100 else "low"
-                    ),
-                    "executor_memory": executor_memory,
-                    "driver_memory": driver_memory,
-                    "memory_fraction": float(memory_fraction),
-                    "storage_fraction": float(storage_fraction),
-                    "estimated_memory_mb": round(estimated_memory_mb, 2),
-                }
-
-                self.logger.log_custom_metrics(
-                    self.current_job_group, self.current_operation, metrics_data
-                )
-
-        except Exception as e:
-            self.logger.log_error(
-                e, {"operation": "record_data_metrics", "table_name": table_name}
-            )
+    # Convenience methods for metrics tracking
+    def start_operation(self, job_group: str, operation: str):
+        """Start tracking metrics for a new operation"""
+        if self.metrics_tracker is not None:
+            self.metrics_tracker.start_operation(job_group, operation)
 
     def end_operation(
         self, spark: SparkSession, execution_time: float, result_count: int = 0
     ):
-        """End tracking metrics for current operation and output to Spark logs"""
-        if not self.current_job_group or not self.current_operation:
-            return
+        """End tracking metrics for current operation"""
+        if self.metrics_tracker is not None:
+            self.metrics_tracker.end_operation(spark, execution_time, result_count)
 
-        self.metrics[self.current_job_group][self.current_operation].update(
-            {
-                "execution_time": round(execution_time, 2),
-                "result_count": result_count,
-                "end_time": time.time(),
-            }
-        )
-
-        # Use hybrid logger for operation completion
-        self.logger.log_operation_completion(
-            self.current_job_group, self.current_operation, execution_time, result_count
-        )
+    def record_data_metrics(self, spark: SparkSession, table_name: str = "skewed_data"):
+        """Record data distribution metrics"""
+        if self.metrics_tracker is not None:
+            self.metrics_tracker.record_data_metrics(spark, table_name)
 
     def get_metrics(self) -> Dict:
         """Get all recorded metrics"""
-        return self.metrics
-
-    def save_metrics(self, filename: str = "shuffling_metrics.json"):
-        """Save metrics to JSON file (kept for backward compatibility)"""
-        try:
-            with open(filename, "w") as f:
-                json.dump(self.metrics, f, indent=2)
-            print(f"Metrics saved to {filename}")
-        except Exception as e:
-            self.logger.log_error(
-                e, {"operation": "save_metrics", "filename": filename}
-            )
-
-    def get_logging_performance_summary(self) -> Dict:
-        """Get performance summary of the logging system"""
-        return self.logger.get_performance_summary()
-
-    def shutdown(self):
-        """Shutdown the hybrid logger"""
-        self.logger.shutdown()
-
-
-def custom_logger(operation_name=None, logger: Optional[HybridLogger] = None, metrics_tracker: Optional[MetricsTracker] = None, require_spark: bool = False):
-    """
-    Decorator for operations that automatically logs execution details and metrics.
-    
-    Args:
-        operation_name: Optional custom name for the operation. If not provided,
-                      the function name will be used.
-        logger: Optional logger instance (defaults to creating a new HybridLogger)
-        metrics_tracker: Optional metrics tracker instance (defaults to creating a new MetricsTracker)
-        require_spark: If True, raises an error if no SparkSession is found.
-                     If False (default), continues without Spark-specific features.
-    """
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            # Check if first argument is 'self' (instance method)
-            is_instance_method = args and hasattr(args[0], 'spark')
-            
-            # Get or create logger and metrics_tracker instances
-            spark = None
-            
-            if is_instance_method:
-                self = args[0]
-                spark = getattr(self, 'spark', None)
-                logger_instance = getattr(self, 'logger', None) or logger
-                mt_instance = getattr(self, 'metrics_tracker', None) or metrics_tracker
-            else:
-                # Try to get spark from kwargs or args
-                spark = kwargs.get('spark')
-                if spark is None:
-                    spark = next((arg for arg in args if hasattr(arg, 'sparkContext')), None)
-                
-                logger_instance = logger
-                mt_instance = metrics_tracker
-
-            # If spark is required but not found, try to get the active session
-            if require_spark and spark is None:
-                try:
-                    from pyspark.sql import SparkSession
-                    spark = SparkSession.getActiveSession()
-                    if spark is None:
-                        raise RuntimeError("No active SparkSession found and no spark instance provided")
-                except Exception as e:
-                    raise RuntimeError(f"Failed to get active SparkSession: {str(e)}")
-
-            # Initialize logger if not provided
-            logger_instance = logger_instance or HybridLogger(spark, func.__module__ if spark else None)
-            mt_instance = mt_instance or (MetricsTracker(spark) if spark else None)
-            
-            # Set logger and metrics_tracker on instance if this is an instance method
-            if is_instance_method:
-                if not hasattr(self, 'logger'):
-                    setattr(self, 'logger', logger_instance)
-                if not hasattr(self, 'metrics_tracker') and mt_instance is not None:
-                    setattr(self, 'metrics_tracker', mt_instance)
-            
-            # Use provided operation name or function name
-            op_name = operation_name or func.__name__
-            
-            # Log operation start
-            logger_instance.log_performance("operation_start", {"operation": op_name})
-            if mt_instance and spark is not None:
-                mt_instance.start_operation("default_job_group", op_name)
-            
-            start_time = time.time()
-            result_count = 0
-            
-            try:
-                # Execute the wrapped function
-                result = func(*args, **kwargs)
-                
-                # Get result count if it's a DataFrame and we have a SparkSession
-                if hasattr(result, 'count') and spark is not None:
-                    try:
-                        result_count = result.count()
-                    except Exception as e:
-                        logger_instance.log_error(e, {"context": f"Error counting results for {op_name}"})
-                
-                execution_time = time.time() - start_time
-                
-                # Log successful completion
-                logger_instance.log_performance("operation_complete", {
-                    "operation": op_name,
-                    "execution_time_seconds": round(execution_time, 4),
-                    "result_count": result_count,
-                    "status": "success"
-                })
-                
-                # Update metrics if we have a metrics tracker and spark session
-                if mt_instance and spark is not None:
-                    mt_instance.end_operation(
-                        spark,
-                        execution_time=execution_time,
-                        result_count=result_count
-                    )
-                
-                return result
-                
-            except Exception as e:
-                execution_time = time.time() - start_time
-                error_info = {
-                    "operation": op_name,
-                    "execution_time_seconds": round(execution_time, 4),
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "status": "failed"
-                }
-                
-                # Log error
-                logger_instance.log_error(e, {"operation": op_name})
-                logger_instance.log_performance("operation_failed", error_info)
-                
-                # Update metrics with failure if we have a metrics tracker and spark session
-                if mt_instance and spark is not None:
-                    mt_instance.end_operation(
-                        spark,
-                        execution_time=execution_time,
-                        result_count=0
-                    )
-                
-                raise
-            
-        return wrapper
-    
-    # Handle both @custom_logger and @custom_logger() syntax
-    if callable(operation_name):
-        # Called as @custom_logger without parameters
-        func = operation_name
-        return decorator(func)
-    else:
-        # Called as @custom_logger() or with parameters
-        return decorator
+        if self.metrics_tracker is not None:
+            return self.metrics_tracker.get_metrics()
+        return {}

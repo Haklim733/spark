@@ -1,7 +1,8 @@
 {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "Legal Document Metadata Schema",
-    "description": "Schema for legal document metadata in ELT pipeline",
+    "description": "schema for legal document metadata",
+    "schema_version": "v1",
     "type": "object",
     "properties": {
         "document_id": {
@@ -20,70 +21,29 @@
             ],
             "description": "Type of legal document"
         },
-        "uuid": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
-            "description": "UUID used for filename generation"
-        },
-        "content_filename": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\.txt$",
-            "description": "The .txt filename"
-        },
-        "metadata_filename": {
-            "type": "string",
-            "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\.json$",
-            "description": "The .json filename"
-        },
-        "keywords": {
-            "type": "array",
-            "items": {"type": "string"},
-            "default": [],
-            "description": "Keywords associated with the document"
-        },
-        "generated_at": {
-            "type": "string",
-            "format": "date-time",
-            "description": "When the document was generated"
-        },
         "content_length": {
             "type": "integer",
             "minimum": 0,
             "description": "Length of the document content in characters"
         },
-        "processing_timestamp": {
+        "generated_at": {
             "type": "string",
             "format": "date-time",
-            "description": "When the document was processed"
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$",
+            "description": "When the document was generated (UTC ISO-8601 with Z suffix)"
         },
         "source": {
             "type": "string",
-            "default": "legal_document_generator",
+            "default": "soli_legal_document_generator",
             "description": "Source system identifier"
-        },
-        "metadata_version": {
-            "type": "string",
-            "default": "1.0",
-            "description": "Version of metadata schema"
-        },
-        "content_file_path": {
-            "type": "string",
-            "description": "S3 path to the content file"
-        },
-        "metadata_file_path": {
-            "type": "string",
-            "description": "S3 path to the metadata file"
         }
     },
     "required": [
         "document_id",
         "document_type",
-        "uuid",
-        "content_filename",
-        "metadata_filename",
-        "generated_at",
         "content_length",
-        "processing_timestamp"
+        "generated_at",
+        "source"
     ],
     "additionalProperties": false
 }

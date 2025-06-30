@@ -111,6 +111,7 @@ services:
       retries: 3
       start_period: 45s
     volumes:
+      - ./src:/home/app/src
       - ./scripts:/home/app/scripts
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf

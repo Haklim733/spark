@@ -238,6 +238,17 @@ def _create_spark_connect_session(
     return builder.getOrCreate()
 
 
+def _get_iceberg_jars() -> str:
+    """Get the Iceberg JARs for the classpath"""
+    spark_home = "/opt/bitnami/spark"
+    iceberg_jars = [
+        f"{spark_home}/jars/iceberg-spark-runtime-3.5_2.12-1.9.1.jar",
+        f"{spark_home}/jars/iceberg-aws-bundle-1.9.1.jar",
+        f"{spark_home}/jars/spark-avro_2.12-3.5.6.jar",
+    ]
+    return ",".join([jar for jar in iceberg_jars if os.path.exists(jar)])
+
+
 def _create_pyspark_session(
     app_name: str, spark_params: Dict[str, str]
 ) -> SparkSession:
@@ -246,7 +257,24 @@ def _create_pyspark_session(
 
     builder = SparkSession.builder.appName(app_name)
 
-    # Apply additional configurations
+    # Load spark-defaults.conf configurations
+    spark_defaults_path = "/opt/bitnami/spark/conf/spark-defaults.conf"
+    if os.path.exists(spark_defaults_path):
+        with open(spark_defaults_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and " " in line:
+                    key, value = line.split(" ", 1)
+                    # Only set if not already in spark_params (spark_params takes precedence)
+                    if key not in spark_params:
+                        builder = builder.config(key, value)
+
+    # Add Iceberg JARs to classpath
+    iceberg_jars = _get_iceberg_jars()
+    if iceberg_jars:
+        builder = builder.config("spark.jars", iceberg_jars)
+
+    # Apply additional configurations (these override spark-defaults.conf)
     for key, value in spark_params.items():
         builder = builder.config(key, value)
 

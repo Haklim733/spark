@@ -5,7 +5,7 @@ MODEL (
 );
 
 WITH raw_documents AS (
-    SELECT * FROM iceberg.legal.documents_raw
+    SELECT * FROM legal.documents_raw
 ),
 
 load_quality AS (

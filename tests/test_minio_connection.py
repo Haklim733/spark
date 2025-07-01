@@ -4,7 +4,7 @@ Test script to verify Spark connection to MinIO
 """
 
 from utils.session import create_spark_session
-from insert_tables import list_minio_files, get_minio_path_info
+from insert_legal import list_minio_files, get_minio_path_info
 
 
 def test_minio_connection():

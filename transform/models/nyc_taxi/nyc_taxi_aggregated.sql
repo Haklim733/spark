@@ -1,5 +1,5 @@
 MODEL (
-    name nyctaxi.nyc_taxi_aggregated,
+    name nyc_taxi.nyc_taxi_aggregated,
     kind INCREMENTAL_BY_TIME_RANGE (
         time_column trip_date
     ),
@@ -19,7 +19,7 @@ SELECT
     MIN(tpep_pickup_datetime) as first_trip,
     MAX(tpep_pickup_datetime) as last_trip,
     CURRENT_TIMESTAMP as processed_at
-FROM iceberg.nyc_taxi_data.yellow_tripdata
+FROM nyc_taxi_data.yellow_tripdata
 WHERE tpep_pickup_datetime >= @start_date
   AND tpep_pickup_datetime < @end_date
   AND tpep_pickup_datetime IS NOT NULL

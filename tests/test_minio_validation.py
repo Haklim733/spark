@@ -9,7 +9,7 @@ from utils.session import (
     IcebergConfig,
     S3FileSystemConfig,
 )
-from insert import (
+from insert_legal import (
     validate_minio_data_loading,
     insert_minio_legal_documents,
     list_minio_files,

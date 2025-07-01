@@ -36,3 +36,11 @@ The data is stored in minio and the iceberg tables are created with Spark. A pys
 2. create_tables.py: create iceberg tables (pyspark)
 3. insert_tables.py: insert legal documents into iceberg table (pyspark)
 4. transformations: sqlmesh 
+
+## setup
+To run transformations using spark, you need to setup the jars to run sqlmesh locally and not in the docker container.
+``` bash
+uv run scripts/setup_jars.sh
+uv run sqlmesh plan dev --gateway spark
+uv run sqlmesh run --gateway spark
+```

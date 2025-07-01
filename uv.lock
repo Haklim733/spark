@@ -1678,13 +1678,9 @@ dependencies = [
     { name = "faker" },
     { name = "jsonschema" },
     { name = "minio" },
+    { name = "psycopg2-binary" },
     { name = "pyspark", extra = ["connect", "sql"] },
     { name = "pytest" },
-]
-
-[package.dev-dependencies]
-transform = [
-    { name = "psycopg2-binary" },
     { name = "sqlmesh", extra = ["postgres", "web"] },
 ]
 
@@ -1693,13 +1689,9 @@ requires-dist = [
     { name = "faker", specifier = ">=28.4.1" },
     { name = "jsonschema", specifier = ">=4.24.0" },
     { name = "minio", specifier = ">=7.2.15" },
+    { name = "psycopg2-binary", specifier = ">=2.9.10" },
     { name = "pyspark", extras = ["connect", "sql"], specifier = ">=3.5.0,<4.0.0" },
     { name = "pytest", specifier = ">=8.4.1" },
-]
-
-[package.metadata.requires-dev]
-transform = [
-    { name = "psycopg2-binary", specifier = ">=2.9.10" },
     { name = "sqlmesh", extras = ["postgres", "web"], specifier = ">=0.164.0" },
 ]
 

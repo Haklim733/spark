@@ -392,8 +392,8 @@ def insert_stream(
 
 def insert_files(
     spark,
-    docs_dir="data/docs",
-    table_name="legal.documents_raw",
+    docs_dir: str,
+    table_name: str,
     batch_mode=True,
     batch_id=None,
     max_workers=None,

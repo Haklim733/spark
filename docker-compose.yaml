@@ -42,6 +42,7 @@ services:
       - ./scripts:/home/app/scripts
       - ./tests:/home/app/tests
       - ./pyproject.toml:/home/app/pyproject.toml
+      - ./transform:/home/app/transform
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
       - ./data/warehouse:/data/warehouse
@@ -59,6 +60,7 @@ services:
       - ./tests:/home/app/tests
       - ./scripts:/home/app/scripts
       - ./pyproject.toml:/home/app/pyproject.toml
+      - ./transform:/home/app/transform
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
       - ./data/warehouse:/data/warehouse
@@ -113,6 +115,7 @@ services:
     volumes:
       - ./src:/home/app/src
       - ./scripts:/home/app/scripts
+      - ./transform:/home/app/transform
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
       - ./data/warehouse:/data/warehouse
@@ -164,9 +167,16 @@ services:
       - 9001:9001
       - 9000:9000
     command: ["server", "/data", "--console-address", ":9001"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
   mc:
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     image: minio/mc
     container_name: spark-mc
     networks:
@@ -175,17 +185,24 @@ services:
       - AWS_ACCESS_KEY_ID=admin
       - AWS_SECRET_ACCESS_KEY=password
       - AWS_REGION=us-east-1
+    healthcheck:
+      test: ["CMD", "mc", "alias", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     entrypoint: |
       /bin/sh -c "
-      until (/usr/bin/mc config host add minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
-      /usr/bin/mc rm -r --force minio/data;
+      /usr/bin/mc alias set minio http://minio:9000 admin password;
+      /usr/bin/mc rm -r --force minio/data || true;
       /usr/bin/mc mb minio/data;
       /usr/bin/mc mb minio/data/docs;
       /usr/bin/mc mb minio/data/docs/legal;
       /usr/bin/mc mb minio/data/wh;
       /usr/bin/mc anonymous set public minio/data;
-      set +o history;
+      echo 'MinIO buckets created successfully';
       tail -f /dev/null"
+    restart: unless-stopped
 volumes:
   spark-logs:
 networks:

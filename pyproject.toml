@@ -10,6 +10,8 @@ dependencies = [
     "minio>=7.2.15",
     "jsonschema>=4.24.0",
     "faker>=28.4.1",
+    "psycopg2-binary>=2.9.10",
+    "sqlmesh[postgres,web]>=0.164.0",
 ]
 
 [tool.pytest.ini_options]
@@ -31,10 +33,4 @@ markers = [
     "spark_connect: marks tests that require Spark Connect",
     "pyspark: marks tests that use PySpark",
     "iceberg: marks tests that require Iceberg"
-]
-
-[dependency-groups]
-transform = [
-    "psycopg2-binary>=2.9.10",
-    "sqlmesh[postgres,web]>=0.164.0",
 ]

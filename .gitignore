@@ -11,3 +11,6 @@ data
 
 # duckdb
 *.db
+
+#jars
+**/jars

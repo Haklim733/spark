@@ -1,5 +1,5 @@
 MODEL (
-    name legal.legal_documents_error,
+    name legal.documents_error_cleaned,
     kind INCREMENTAL_BY_TIME_RANGE (
         time_column load_timestamp,
     ),
@@ -8,7 +8,7 @@ MODEL (
 );
 
 WITH raw_documents AS (
-    SELECT * FROM iceberg.legal.documents_raw
+    SELECT * FROM legal.documents
     WHERE load_timestamp >= @start_date
       AND load_timestamp < @end_date
 ),

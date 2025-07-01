@@ -120,35 +120,6 @@ spark = create_iceberg_spark_session(
 )
 ```
 
-## Migration Guide
-
-### From Old Functions
-
-| Old Function | New Function |
-|--------------|--------------|
-| `create_spark_connect_session()` | `create_spark_session(SparkVersion.SPARK_CONNECT_4_0)` |
-| `create_iceberg_spark_session()` | `create_iceberg_spark_session()` |
-| `create_shuffling_optimized_session()` | `create_spark_session(SparkVersion.SPARK_3_5)` |
-
-### Example Migration
-
-**Before:**
-```python
-from utils import create_spark_connect_session
-
-spark = create_spark_connect_session("MyApp")
-```
-
-**After:**
-```python
-from utils import create_spark_session, SparkVersion
-
-spark = create_spark_session(
-    spark_version=SparkVersion.SPARK_CONNECT_4_0,
-    app_name="MyApp"
-)
-```
-
 ## Configuration Examples
 
 ### Basic PySpark Session

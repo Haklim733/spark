@@ -9,15 +9,13 @@ gateways:
         - httpfs
         - iceberg
         - aws
-      catalogs:
-        iceberg:
-          type: rest
-          uri: 'http://localhost:8181'
-          s3_region: {{ env_var('S3_REGION', 'us-east-1') }}
-          s3_access_key_id: {{ env_var('S3_ACCESS_KEY', 'minioadmin') }}
-          s3_secret_access_key: {{ env_var('S3_SECRET_KEY', 'minioadmin') }}
-          s3_endpoint: {{ env_var('S3_ENDPOINT', 'http://localhost:9000') }}
-          s3_url_style: 'path'
+      secrets:
+        - type: s3
+          region: "us-east-1"
+          key_id: "admin"
+          secret: "password"
+          endpoint: "http://localhost:9000"
+          url_style: "path"
     state_connection:
       type: duckdb
       database: 'sqlmesh_state.db'
@@ -26,17 +24,43 @@ gateways:
     connection:
       type: spark
       config:
-        # Use local mode since Iceberg JARs aren't available locally
-        spark.master: local[*]
-        # Basic Spark config (no Iceberg extensions)
-        spark.sql.adaptive.enabled: true
-        spark.sql.adaptive.coalescePartitions.enabled: true
+        spark.master: spark://localhost:7077
+        spark.jars: /home/llee/projects/spark/transform/jars/iceberg-spark-runtime-3.5_2.12-1.9.1.jar,/home/llee/projects/spark/transform/jars/iceberg-aws-bundle-1.9.1.jar
+        spark.sql.extensions: org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+        spark.sql.defaultCatalog: iceberg
+        spark.sql.catalog.iceberg: org.apache.iceberg.spark.SparkCatalog
+        spark.sql.catalog.iceberg.catalog-impl: org.apache.iceberg.rest.RESTCatalog
+        spark.sql.catalog.iceberg.uri: http://localhost:8181
+        spark.sql.catalog.iceberg.warehouse: s3://data/wh
+        spark.sql.catalog.iceberg.s3.endpoint: http://localhost:9000
+        spark.sql.catalog.iceberg.s3.access-key: admin
+        spark.sql.catalog.iceberg.s3.secret-key: password
+        spark.sql.catalog.iceberg.s3.region: us-east-1
+        spark.sql.catalog.iceberg.s3.path-style-access: true
+        spark.sql.catalog.iceberg.s3.ssl-enabled: false
+        spark.sql.catalog.iceberg.s3.connection-timeout: 60000
+        spark.sql.catalog.iceberg.s3.socket-timeout: 60000
+        spark.sql.catalog.iceberg.s3.max-connections: 100
+        spark.hadoop.fs.s3.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
+        spark.hadoop.fs.s3a.access.key: admin
+        spark.hadoop.fs.s3a.secret.key: password
+        spark.hadoop.fs.s3a.endpoint: http://localhost:9000
+        spark.hadoop.fs.s3a.region: us-east-1
+        spark.hadoop.fs.s3a.path.style.access: true
+        spark.hadoop.fs.s3a.connection.ssl.enabled: false
+        spark.hadoop.fs.s3a.metrics.enabled: true
+        spark.hadoop.fs.s3a.metrics.reporting.interval: 60
+        spark.hadoop.fs.s3a.connection.timeout: 60000
+        spark.hadoop.fs.s3a.socket.timeout: 60000
+        spark.hadoop.fs.s3a.max.connections: 100
+        spark.hadoop.fs.s3a.threads.max: 20
+        spark.hadoop.fs.s3a.threads.core: 10
+        spark.hadoop.fs.s3a.buffer.dir: /tmp
+        spark.hadoop.fs.s3a.experimental.input.fadvise: normal
     test_connection:
       type: spark
       config:
-        # Use local mode for testing/validation - no cluster needed
         spark.master: local[*]
-        # Basic Spark config for validation (no Iceberg extensions needed)
         spark.sql.adaptive.coalescePartitions.enabled: true
     state_connection:
       type: duckdb
@@ -61,10 +85,10 @@ gateways:
       password: {{ env_var('PG_PASSWORD') }}
       database: postgres
 
-default_gateway: local
+default_gateway: spark
 
 model_defaults:
-  dialect: duckdb
+  dialect: spark
 
 ignore_patterns:
   - "generator"

@@ -1,0 +1,1 @@
+uv run scripts/submit.py --file-path=src/insert_nyc_taxi.py --args="--file-path=s3a://data/nyc/taxi/* --table-name=nyc_taxi_data.yellow_tripdata"

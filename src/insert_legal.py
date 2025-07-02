@@ -1088,7 +1088,7 @@ def record_batch_metrics_to_table(
 
         # Convert to DataFrame and insert
         df = spark.createDataFrame([batch_metrics])
-        df.writeTo("admin.ppend()
+        df.writeTo("admin.batch_jobs").append()
         print(f"✅ Batch metrics recorded for {batch_id}")
         print(f"   - Status: {validation_result['validation_status']}")
         print(f"   - Duration: {batch_duration_ms:.0f}ms")

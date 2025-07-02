@@ -8,6 +8,7 @@ Note: Spark Connect has known limitations with Iceberg extensions
 import pytest
 from pyspark.sql import SparkSession
 from pyspark.errors.exceptions.base import PySparkNotImplementedError
+from src.utils import create_spark_connect_session, IcebergConfig, S3FileSystemConfig
 
 
 class TestSparkConnectIceberg:
@@ -16,37 +17,26 @@ class TestSparkConnectIceberg:
     @pytest.fixture(scope="class")
     def spark_connect_iceberg_session(self):
         """Create Spark Connect session with Iceberg configuration"""
-        # Create Spark session with Spark Connect and Iceberg config
-        spark = (
-            SparkSession.builder.appName("SparkConnectIcebergTest")
-            .remote("sc://localhost:15002")
-            .config(
-                "spark.sql.extensions",
-                "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
-            )
-            .config(
-                "spark.sql.catalog.iceberg", "org.apache.iceberg.spark.SparkCatalog"
-            )
-            .config("spark.sql.catalog.iceberg.type", "rest")
-            .config("spark.sql.catalog.iceberg.uri", "http://iceberg-rest:8181")
-            .config("spark.sql.catalog.iceberg.warehouse", "s3://data/wh")
-            .config("spark.sql.catalog.iceberg.s3.endpoint", "http://minio:9000")
-            .config("spark.sql.catalog.iceberg.s3.access-key", "admin")
-            .config("spark.sql.catalog.iceberg.s3.secret-key", "password")
-            .config("spark.sql.catalog.iceberg.s3.force-path-style", "true")
-            .config("spark.sql.catalog.iceberg.s3.region", "us-east-1")
-            .config("spark.sql.defaultCatalog", "iceberg")
-            .config("spark.hadoop.fs.s3.region", "us-east-1")
-            .config("spark.hadoop.fs.s3a.region", "us-east-1")
-            .config("spark.hadoop.fs.s3.endpoint", "http://minio:9000")
-            .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
-            .config("spark.hadoop.fs.s3.access.key", "admin")
-            .config("spark.hadoop.fs.s3a.access.key", "admin")
-            .config("spark.hadoop.fs.s3.secret.key", "password")
-            .config("spark.hadoop.fs.s3a.secret.key", "password")
-            .config("spark.hadoop.fs.s3.force.path.style", "true")
-            .config("spark.hadoop.fs.s3a.force.path.style", "true")
-            .getOrCreate()
+        # Create S3 configuration
+        s3_config = S3FileSystemConfig(
+            endpoint="http://minio:9000",
+            region="us-east-1",
+            access_key="admin",
+            secret_key="password",
+            path_style_access=True,
+            ssl_enabled=False,
+        )
+
+        # Create Iceberg configuration
+        iceberg_config = IcebergConfig(
+            s3_config=s3_config,
+            catalog_type="rest",
+            catalog_uri="http://iceberg-rest:8181",
+            warehouse="s3://data/wh",
+        )
+
+        spark = create_spark_connect_session(
+            "SparkConnectIcebergTest", iceberg_config=iceberg_config
         )
         yield spark
         spark.stop()

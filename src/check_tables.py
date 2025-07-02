@@ -1,6 +1,11 @@
 import os
 from pathlib import Path
-from utils.session import create_spark_session, SparkVersion
+from utils.session import (
+    create_spark_session,
+    SparkVersion,
+    IcebergConfig,
+    S3FileSystemConfig,
+)
 
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "admin")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "password")
@@ -31,13 +36,16 @@ def check_namespace_tables(spark, namespace):
 
 
 def main():
-    # Use default Iceberg configuration
+    # Use Iceberg configuration to connect to the same catalog as create_tables.py
+    s3_config = S3FileSystemConfig()
+    iceberg_config = IcebergConfig(s3_config)
 
-    with create_spark_session(
-        spark_version=SparkVersion.SPARK_3_5,
+    spark = create_spark_session(
+        spark_version=SparkVersion.SPARK_CONNECT_3_5,
         app_name=Path(__file__).stem,
-    ) as spark:
-
+        iceberg_config=iceberg_config,
+    )
+    try:
         print("=== SHOWING DATABASES ===")
         try:
             databases = spark.sql("SHOW DATABASES;")
@@ -58,6 +66,8 @@ def main():
         print(f"\n{'='*50}")
         print("Table check complete!")
         print(f"{'='*50}")
+    finally:
+        spark.stop()
 
 
 if __name__ == "__main__":

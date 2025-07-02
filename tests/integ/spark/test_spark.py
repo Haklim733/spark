@@ -62,7 +62,6 @@ class TestBasicSessionCreation:
 
     def test_pyspark_with_iceberg(self, iceberg_config):
         """Test PySpark session with Iceberg configuration"""
-        # Create a fresh session for this test
         spark = create_spark_session(
             spark_version=SparkVersion.SPARK_3_5,
             app_name="PySparkIcebergTest",
@@ -74,32 +73,18 @@ class TestBasicSessionCreation:
 
         # Check that Iceberg configurations are applied
         extensions = spark.conf.get("spark.sql.extensions", "")
-        print(f"Extensions: {extensions}")
-
-        # Skip test if Iceberg extensions aren't available (JARs may not be present)
-        if not extensions or "IcebergSparkSessionExtensions" not in extensions:
-            pytest.skip(
-                "Iceberg extensions not available - JARs may not be present in test environment"
-            )
-
         assert "IcebergSparkSessionExtensions" in extensions
 
         # Check other Iceberg configs
-        catalog_config = spark.conf.get("spark.sql.catalog.iceberg")
-        print(f"Catalog config: {catalog_config}")
-        assert catalog_config == "org.apache.iceberg.spark.SparkCatalog"
-
-        default_catalog = spark.conf.get("spark.sql.defaultCatalog")
-        print(f"Default catalog: {default_catalog}")
-        assert default_catalog == "iceberg"
-
-        catalog_type = spark.conf.get("spark.sql.catalog.iceberg.type")
-        print(f"Catalog type: {catalog_type}")
-        assert catalog_type == "rest"
-
-        catalog_uri = spark.conf.get("spark.sql.catalog.iceberg.uri")
-        print(f"Catalog URI: {catalog_uri}")
-        assert catalog_uri == "http://spark-rest:8181"
+        assert (
+            spark.conf.get("spark.sql.catalog.iceberg")
+            == "org.apache.iceberg.spark.SparkCatalog"
+        )
+        assert spark.conf.get("spark.sql.defaultCatalog") == "iceberg"
+        assert spark.conf.get("spark.sql.catalog.iceberg.type") == "rest"
+        assert (
+            spark.conf.get("spark.sql.catalog.iceberg.uri") == "http://spark-rest:8181"
+        )
 
         spark.stop()
 
@@ -118,32 +103,25 @@ class TestBasicSessionCreation:
 class TestDataFrameOperations:
     """Test DataFrame operations with different session types"""
 
-    def test_basic_dataframe_operations_pyspark(self):
+    def test_basic_dataframe_operations_pyspark(self, spark_session_pyspark):
         """Test basic DataFrame operations with PySpark"""
-        # Create a fresh session for this test
-        spark = create_spark_session(
-            spark_version=SparkVersion.SPARK_3_5, app_name="DataFrameTest"
-        )
-
         # Ensure the session is properly connected
-        assert spark.sparkContext is not None
-        assert spark.sparkContext.applicationId is not None
+        assert spark_session_pyspark.sparkContext is not None
+        assert spark_session_pyspark.sparkContext.applicationId is not None
 
         data = [("key1", 100), ("key2", 200), ("key3", 300)]
-        df = spark.createDataFrame(data, ["key", "value"])
+        df = spark_session_pyspark.createDataFrame(data, ["key", "value"])
 
-        # Test basic DataFrame properties without expensive operations
+        assert df.count() == 3
         assert len(df.columns) == 2
         assert "key" in df.columns
         assert "value" in df.columns
 
-        # Test schema
-        schema = df.schema
-        assert len(schema.fields) == 2
-        assert schema.fields[0].name == "key"
-        assert schema.fields[1].name == "value"
-
-        spark.stop()
+        # Test show operation
+        result = df.collect()
+        assert len(result) == 3
+        assert result[0]["key"] == "key1"
+        assert result[0]["value"] == 100
 
 
 class TestConfigurationManagement:

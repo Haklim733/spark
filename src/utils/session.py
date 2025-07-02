@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from enum import Enum
 import os
+import zipfile
+import tempfile
 from typing import Dict, Optional
 
 from pyspark.sql import SparkSession
@@ -20,27 +22,41 @@ class S3FileSystemConfig:
 
     def __init__(
         self,
-        endpoint: str = "http://minio:9000",
-        region: str = "us-east-1",
+        endpoint: str = None,
+        region: str = None,
         access_key: Optional[str] = None,
         secret_key: Optional[str] = None,
         path_style_access: bool = True,
         ssl_enabled: bool = False,
     ):
-        self.endpoint = endpoint
-        self.region = region
+        # Get endpoint from env or default, strip protocol if present
+        default_endpoint = os.getenv("S3_ENDPOINT", "localhost:9000")
+        if default_endpoint.startswith(("http://", "https://")):
+            default_endpoint = default_endpoint.split("://", 1)[1]
+
+        self.endpoint = endpoint or default_endpoint
+        self.region = region or os.getenv("AWS_REGION", "us-east-1")
+
+        # Use AWS environment variables for consistency with Spark S3A
         self.access_key = access_key or os.getenv("AWS_ACCESS_KEY_ID", "admin")
         self.secret_key = secret_key or os.getenv("AWS_SECRET_ACCESS_KEY", "password")
+
         self.path_style_access = path_style_access
         self.ssl_enabled = ssl_enabled
 
     def get_spark_configs(self) -> Dict[str, str]:
         """Get Spark configuration dictionary for S3 Filesystem"""
+        # Spark S3A requires protocol in endpoint, so add http:// if not present
+        endpoint = self.endpoint
+        if not endpoint.startswith(("http://", "https://")):
+            endpoint = f"http://{endpoint}"
+
         return {
             "spark.hadoop.fs.s3.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
+            "spark.hadoop.fs.s3a.aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
             "spark.hadoop.fs.s3a.access.key": self.access_key,
             "spark.hadoop.fs.s3a.secret.key": self.secret_key,
-            "spark.hadoop.fs.s3a.endpoint": self.endpoint,
+            "spark.hadoop.fs.s3a.endpoint": endpoint,
             "spark.hadoop.fs.s3a.region": self.region,
             "spark.hadoop.fs.s3a.path.style.access": str(
                 self.path_style_access
@@ -66,65 +82,42 @@ class IcebergConfig:
     def __init__(
         self,
         s3_config: S3FileSystemConfig,
-        catalog_type: str = "rest",
         catalog_uri: str = "http://iceberg-rest:8181",
         warehouse: str = "s3://data/wh",
     ):
         self.s3_config = s3_config
-        self.catalog_type = catalog_type
         self.catalog_uri = catalog_uri
         self.warehouse = warehouse
 
     def get_spark_configs(self) -> Dict[str, str]:
         """Get Spark configuration dictionary for Iceberg"""
         configs = {
-            "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+            # Note: spark.sql.extensions is a static config and should be set in spark-defaults.conf
+            # "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+            "spark.sql.catalog.iceberg": "org.apache.iceberg.spark.SparkCatalog",
             "spark.sql.defaultCatalog": "iceberg",
+            "spark.sql.catalog.iceberg.type": "rest",
+            "spark.sql.catalog.iceberg.uri": self.catalog_uri,
+            "spark.sql.catalog.iceberg.io-impl": "org.apache.iceberg.aws.s3.S3FileIO",
             "spark.sql.catalog.iceberg.warehouse": self.warehouse,
+            "spark.sql.catalog.iceberg.s3.endpoint": f"http://{self.s3_config.endpoint}",
+            "spark.sql.catalog.iceberg.s3.access-key": self.s3_config.access_key,
+            "spark.sql.catalog.iceberg.s3.secret-key": self.s3_config.secret_key,
+            "spark.sql.catalog.iceberg.s3.region": self.s3_config.region,
+            "spark.sql.catalog.iceberg.s3.path-style-access": str(
+                self.s3_config.path_style_access
+            ).lower(),
+            "spark.sql.catalog.iceberg.s3.ssl-enabled": str(
+                self.s3_config.ssl_enabled
+            ).lower(),
+            "spark.sql.catalog.iceberg.s3.connection-timeout": "60000",
+            "spark.sql.catalog.iceberg.s3.socket-timeout": "60000",
+            "spark.sql.catalog.iceberg.s3.max-connections": "100",
             "spark.sql.execution.metrics.enabled": "true",
             "spark.sql.execution.metrics.persist": "true",
         }
-
-        if self.catalog_type == "hadoop":
-            configs.update(
-                {
-                    "spark.sql.catalog.iceberg": "org.apache.iceberg.spark.SparkCatalog",
-                    "spark.sql.catalog.iceberg.type": "hadoop",
-                }
-            )
-        elif self.catalog_type == "jdbc":
-            configs.update(
-                {
-                    "spark.sql.catalog.iceberg": "org.apache.iceberg.jdbc.JdbcCatalog",
-                    "spark.sql.catalog.iceberg.catalog-impl": "org.apache.iceberg.jdbc.JdbcCatalog",
-                    "spark.sql.catalog.iceberg.uri": self.catalog_uri,
-                }
-            )
-        elif self.catalog_type == "rest":
-            configs.update(
-                {
-                    "spark.sql.catalog.iceberg": "org.apache.iceberg.spark.SparkCatalog",
-                    "spark.sql.catalog.iceberg.catalog-impl": "org.apache.iceberg.rest.RESTCatalog",
-                    "spark.sql.catalog.iceberg.uri": self.catalog_uri,
-                    "spark.sql.catalog.iceberg.s3.endpoint": self.s3_config.endpoint,
-                    "spark.sql.catalog.iceberg.s3.access-key": self.s3_config.access_key,
-                    "spark.sql.catalog.iceberg.s3.secret-key": self.s3_config.secret_key,
-                    "spark.sql.catalog.iceberg.s3.region": self.s3_config.region,
-                    "spark.sql.catalog.iceberg.s3.path-style-access": str(
-                        self.s3_config.path_style_access
-                    ).lower(),
-                    "spark.sql.catalog.iceberg.s3.ssl-enabled": str(
-                        self.s3_config.ssl_enabled
-                    ).lower(),
-                    "spark.sql.catalog.iceberg.s3.connection-timeout": "60000",
-                    "spark.sql.catalog.iceberg.s3.socket-timeout": "60000",
-                    "spark.sql.catalog.iceberg.s3.max-connections": "100",
-                }
-            )
-
         # S3 configuration for data storage
         configs.update(self.s3_config.get_spark_configs())
-
         return configs
 
 
@@ -180,7 +173,7 @@ class PerformanceConfig:
 
 
 def create_spark_session(
-    spark_version: SparkVersion = SparkVersion.SPARK_3_5,
+    spark_version: SparkVersion = SparkVersion.SPARK_CONNECT_3_5,
     app_name: str = "SparkApp",
     iceberg_config: Optional[IcebergConfig] = None,
     performance_config: Optional[PerformanceConfig] = None,
@@ -193,7 +186,7 @@ def create_spark_session(
     Args:
         spark_version: SparkVersion enum specifying the type of session to create
         app_name: Name of the Spark application (used as prefix for event logs)
-        iceberg_config: Optional IcebergConfig for Iceberg integration
+        iceberg_config: Optional IcebergConfig for Iceberg integration (defaults to Iceberg)
         performance_config: Optional PerformanceConfig for performance tuning
         s3_config: Optional S3FileSystemConfig for S3/MinIO access without Iceberg
         **additional_configs: Additional Spark configurations (overrides defaults)
@@ -202,18 +195,52 @@ def create_spark_session(
         SparkSession: Configured Spark session
     """
     # Use provided performance config or create a default one
-    log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
-    os.makedirs(log_dir, exist_ok=True)
     if not performance_config:
         performance_config = PerformanceConfig()
+
+    # If iceberg_config is not provided, use default IcebergConfig
+    if iceberg_config is None:
+        if s3_config is None:
+            s3_config = S3FileSystemConfig()
+        iceberg_config = IcebergConfig(s3_config)
 
     # Start with performance configs
     merged_configs = {
         **performance_config.get_spark_configs(),
-        "spark.eventLog.enabled": "true",
-        "spark.eventLog.dir": f"file:///opt/bitnami/spark/logs/app/{app_name}",
         **additional_configs,
     }
+
+    # Only set up event logging if we're in a Docker environment or if the path exists
+    log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
+    if os.path.exists("/opt/bitnami/spark") or os.getenv("SPARK_HOME", "").startswith(
+        "/opt/bitnami"
+    ):
+        # We're in Docker environment
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+            merged_configs.update(
+                {
+                    "spark.eventLog.enabled": "true",
+                    "spark.eventLog.dir": f"file:///opt/bitnami/spark/logs/app/{app_name}",
+                }
+            )
+        except PermissionError:
+            print(
+                f"⚠️  Warning: Could not create log directory {log_dir}. Event logging disabled."
+            )
+    else:
+        # We're running locally, use a local log directory
+        local_log_dir = f"./spark-logs/app/{app_name}"
+        try:
+            os.makedirs(local_log_dir, exist_ok=True)
+            merged_configs.update(
+                {
+                    "spark.eventLog.enabled": "true",
+                    "spark.eventLog.dir": f"file://{os.path.abspath(local_log_dir)}",
+                }
+            )
+        except Exception as e:
+            print(f"⚠️  Warning: Could not set up event logging: {e}")
 
     # Add S3 configuration (always needed for MinIO access)
     if s3_config:
@@ -230,13 +257,13 @@ def create_spark_session(
     if iceberg_config:
         merged_configs.update(iceberg_config.get_spark_configs())
 
-    if spark_version == SparkVersion.SPARK_CONNECT_4_0:
-        return _create_spark_connect_session(
-            app_name=app_name, spark_params=merged_configs
-        )
-    elif spark_version == SparkVersion.SPARK_CONNECT_3_5:
-        return _create_spark_connect_session(
-            app_name=app_name, spark_params=merged_configs
+    if spark_version in [
+        SparkVersion.SPARK_CONNECT_4_0,
+        SparkVersion.SPARK_CONNECT_3_5,
+    ]:
+        # For Spark Connect, use the consolidated session function
+        return create_spark_connect_session(
+            app_name=app_name, iceberg_config=iceberg_config, **additional_configs
         )
     elif spark_version in [SparkVersion.SPARK_3_5, SparkVersion.SPARK_4_0]:
         return _create_pyspark_session(app_name=app_name, spark_params=merged_configs)
@@ -244,21 +271,117 @@ def create_spark_session(
         raise ValueError(f"Unsupported Spark version: {spark_version}")
 
 
-def _create_spark_connect_session(
-    app_name: str, spark_params: Dict[str, str]
+def _create_src_archive() -> str:
+    """Create a zip archive of the src directory for Spark Connect artifacts"""
+    src_dir = "src"
+    if not os.path.exists(src_dir):
+        raise FileNotFoundError(f"src directory not found: {src_dir}")
+
+    # Create temporary zip file
+    temp_file = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    temp_path = temp_file.name
+    temp_file.close()
+
+    with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(src_dir):
+            # Skip cache and git directories
+            dirs[:] = [d for d in dirs if not d.startswith("__") and d != ".git"]
+            for file in files:
+                if file.endswith((".py", ".json", ".yaml", ".yml")):
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, src_dir)
+                    zipf.write(file_path, arcname)
+
+    return temp_path
+
+
+def create_spark_connect_session(
+    app_name: str = "SparkConnectApp",
+    iceberg_config: Optional[IcebergConfig] = None,
+    add_artifacts: bool = False,
+    **additional_configs,
 ) -> SparkSession:
-    """Create a Spark Connect session (4.0+)"""
+    """
+    Create a Spark Connect session with optional Iceberg configuration
+
+    Args:
+        app_name: Name of the Spark application
+        iceberg_config: Optional IcebergConfig for Iceberg integration
+        add_artifacts: Whether to add src directory as artifacts
+        **additional_configs: Additional Spark configurations
+
+    Returns:
+        SparkSession: Configured Spark Connect session
+    """
+    # Start with additional configs
+    spark_params = {**additional_configs}
+
+    # Add Iceberg configuration if provided
+    if iceberg_config:
+        spark_params.update(iceberg_config.get_spark_configs())
+
+    # Add artifacts flag if requested
+    if add_artifacts:
+        spark_params["spark.connect.add.artifacts"] = "true"
+
+    return _create_spark_connect_session(app_name, spark_params)
+
+
+def _create_spark_connect_session(
+    app_name: str,
+    spark_params: Dict[str, str] = None,
+    add_artifacts: bool = False,
+) -> SparkSession:
+    """
+    Internal function to create a Spark Connect session (3.5+)
+
+    Args:
+        app_name: Name of the Spark application
+        spark_params: Dictionary of Spark configuration parameters
+        add_artifacts: Whether to add src directory as artifacts
+
+    Returns:
+        SparkSession: Configured Spark Connect session
+    """
+    if spark_params is None:
+        spark_params = {}
+
     builder = SparkSession.builder.appName(app_name).remote("sc://localhost:15002")
+
     # Apply additional configurations
     for key, value in spark_params.items():
         builder = builder.config(key, value)
 
-    return builder.getOrCreate()
+    spark = builder.getOrCreate()
+
+    # Add src directory as artifact for Spark Connect (optional)
+    # Check both the parameter and the config flag
+    should_add_artifacts = (
+        add_artifacts
+        or spark_params.get("spark.connect.add.artifacts", "false").lower() == "true"
+    )
+
+    if should_add_artifacts:
+        try:
+            src_archive = _create_src_archive()
+            spark.addArtifact(src_archive, pyfile=True)
+            # Clean up the temporary file after adding to Spark
+            os.unlink(src_archive)
+        except Exception as e:
+            print(f"Warning: Could not add src directory as artifact: {e}")
+
+    return spark
 
 
 def _get_iceberg_jars() -> str:
     """Get the Iceberg JARs for the classpath"""
-    spark_home = "/opt/bitnami/spark"
+    # Check if we're in Docker environment
+    if os.path.exists("/opt/bitnami/spark"):
+        spark_home = "/opt/bitnami/spark"
+    else:
+        # We're running locally, Iceberg JARs should be available via Spark Connect
+        return ""
+
     iceberg_jars = [
         f"{spark_home}/jars/iceberg-spark-runtime-3.5_2.12-1.9.1.jar",
         f"{spark_home}/jars/iceberg-aws-bundle-1.9.1.jar",
@@ -275,17 +398,20 @@ def _create_pyspark_session(
 
     builder = SparkSession.builder.appName(app_name)
 
-    # Load spark-defaults.conf configurations
+    # Load spark-defaults.conf configurations (only if in Docker environment)
     spark_defaults_path = "/opt/bitnami/spark/conf/spark-defaults.conf"
     if os.path.exists(spark_defaults_path):
-        with open(spark_defaults_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and " " in line:
-                    key, value = line.split(" ", 1)
-                    # Only set if not already in spark_params (spark_params takes precedence)
-                    if key not in spark_params:
-                        builder = builder.config(key, value)
+        try:
+            with open(spark_defaults_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and " " in line:
+                        key, value = line.split(" ", 1)
+                        # Only set if not already in spark_params (spark_params takes precedence)
+                        if key not in spark_params:
+                            builder = builder.config(key, value)
+        except Exception as e:
+            print(f"⚠️  Warning: Could not read spark-defaults.conf: {e}")
 
     # Add Iceberg JARs to classpath
     iceberg_jars = _get_iceberg_jars()

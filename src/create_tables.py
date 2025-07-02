@@ -6,7 +6,12 @@ Supports both traditional DDL files and SchemaManager-based table creation
 """
 
 from pathlib import Path
-from utils.session import create_spark_session, SparkVersion
+from utils.session import (
+    create_spark_session,
+    SparkVersion,
+    IcebergConfig,
+    S3FileSystemConfig,
+)
 
 
 def execute_ddl_file(ddl_file_path, spark):
@@ -85,9 +90,8 @@ def main():
     """Main function to execute DDL statements and create tables from schemas"""
     app_name = Path(__file__).stem
 
-    # Create Spark session with Iceberg
     spark = create_spark_session(
-        spark_version=SparkVersion.SPARK_3_5,
+        spark_version=SparkVersion.SPARK_CONNECT_3_5,
         app_name=app_name,
     )
 

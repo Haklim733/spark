@@ -214,25 +214,297 @@ python src/examples/session_examples.py
 5. **Dependency Injection**: Clean separation of concerns for Iceberg config
 6. **Backward Compatibility**: Old functions still work with deprecation warnings 
 
+## S3A vs Iceberg Catalog Configuration
+
+When working with S3/MinIO storage, it's important to understand the difference between S3A filesystem configuration and Iceberg catalog configuration, as they serve different purposes and use different property names.
+
+### S3A Filesystem Configuration (for direct S3 operations)
+
+Used for direct S3/MinIO filesystem operations like `spark.read.text("s3a://bucket/file.txt")`:
+
+```conf
+# S3A Filesystem configuration for direct S3/MinIO access
+spark.hadoop.fs.s3.impl org.apache.hadoop.fs.s3a.S3AFileSystem
+spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+spark.hadoop.fs.s3a.access.key sparkuser
+spark.hadoop.fs.s3a.secret.key sparkpass
+spark.hadoop.fs.s3a.endpoint http://minio:9000
+spark.hadoop.fs.s3a.region us-east-1
+spark.hadoop.fs.s3a.path.style.access true
+spark.hadoop.fs.s3a.connection.ssl.enabled false
+```
+
+### Iceberg Catalog Configuration (for Iceberg operations)
+
+Used for Iceberg catalog operations like table creation and metadata management:
+
+```conf
+# Iceberg catalog configuration
+spark.sql.catalog.iceberg.s3.access-key-id sparkuser
+spark.sql.catalog.iceberg.s3.secret-access-key sparkpass
+spark.sql.catalog.iceberg.s3.endpoint http://minio:9000
+spark.sql.catalog.iceberg.s3.region us-east-1
+spark.sql.catalog.iceberg.s3.path-style-access true
+spark.sql.catalog.iceberg.s3.ssl-enabled false
+```
+
+### Key Differences
+
+| Aspect | S3A Filesystem | Iceberg Catalog |
+|--------|----------------|-----------------|
+| **Purpose** | Direct S3/MinIO file operations | Iceberg table metadata and catalog operations |
+| **Property prefix** | `spark.hadoop.fs.s3a.*` | `spark.sql.catalog.iceberg.s3.*` |
+| **Access key** | `access.key` | `access-key-id` |
+| **Secret key** | `secret.key` | `secret-access-key` |
+| **Implementation** | Hadoop S3A filesystem | Iceberg S3FileIO |
+| **Use cases** | `spark.read.text("s3a://bucket/file.txt")` | `spark.sql("CREATE TABLE ...")` |
+
+### Common Issue: Missing S3A Configuration
+
+If you encounter 403 Forbidden errors when trying to read files directly from S3/MinIO (e.g., `spark.read.text("s3a://data/test.txt")`), ensure that:
+
+1. **Both configurations are present**: S3A filesystem config for direct file access, Iceberg catalog config for table operations
+2. **Credentials match**: Both configurations should use the same access credentials
+3. **Spark Connect server has S3A config**: The Spark Connect server needs S3A configuration in `spark-defaults.conf`
+
+### Example: Complete Configuration
+
+For a setup that supports both direct S3 operations and Iceberg catalog operations:
+
+```conf
+# Iceberg catalog configuration
+spark.sql.catalog.iceberg org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.iceberg.type rest
+spark.sql.catalog.iceberg.uri http://iceberg-rest:8181
+spark.sql.catalog.iceberg.io-impl org.apache.iceberg.aws.s3.S3FileIO
+spark.sql.catalog.iceberg.warehouse s3://data/wh/
+spark.sql.catalog.iceberg.s3.access-key-id sparkuser
+spark.sql.catalog.iceberg.s3.secret-access-key sparkpass
+spark.sql.catalog.iceberg.s3.endpoint http://minio:9000
+spark.sql.catalog.iceberg.s3.region us-east-1
+spark.sql.catalog.iceberg.s3.path-style-access true
+spark.sql.catalog.iceberg.s3.ssl-enabled false
+spark.sql.defaultCatalog iceberg
+
+# S3A Filesystem configuration for direct S3/MinIO access
+spark.hadoop.fs.s3.impl org.apache.hadoop.fs.s3a.S3AFileSystem
+spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+spark.hadoop.fs.s3a.access.key sparkuser
+spark.hadoop.fs.s3a.secret.key sparkpass
+spark.hadoop.fs.s3a.endpoint http://minio:9000
+spark.hadoop.fs.s3a.region us-east-1
+spark.hadoop.fs.s3a.path.style.access true
+spark.hadoop.fs.s3a.connection.ssl.enabled false
+```
+
 ## Limitations: Unsupported and Supported Functions in Spark Connect
 
-Spark Connect (as of your current environment) supports more features than earlier versions, but some limitations remain. Based on actual tests, here is what is and isn't supported:
+Spark Connect (as of your current environment) supports more features than earlier versions, but some limitations remain. Based on comprehensive atomic testing in `tests/integ/local/test_spark_connect_functions.py`, here is what is and isn't supported:
 
-### Supported (did NOT raise errors in tests)
-- **Python UDFs**: User-defined functions written in Python are supported.
-- **DataFrame actions**: `collect()` and `toPandas()` work as expected.
-- **DataFrame `count()`**: Technically supported but can be very slow due to remote job execution.
-- **Iceberg catalog DDL**: Namespace creation and similar DDL operations work.
-- **Direct file system access**: Reading local files from the Python process is supported.
+### Test Structure
+The test suite is organized into classes that test specific categories of operations:
+- `TestDataFrameOperations`: Basic DataFrame creation and transformations
+- `TestSQLOperations`: SQL queries, temp views, and GROUP BY operations
+- `TestAggregationFunctions`: Aggregation functions like count, collect_list, concat_ws
+- `TestFileOperations`: File reading and input_file_name function
+- `TestPythonUDFs`: Python user-defined functions
+- `TestActionOperations`: DataFrame actions (expected to fail)
+- `TestComplexOperations`: Complex operations that depend on basic ones
+- `TestUnsupportedOperations`: Operations known to be unsupported
+- `TestIcebergOperations`: Iceberg catalog operations
+- `TestPerformanceAndLimitations`: Performance considerations
 
-**Note**: While `count()` is supported, it can be very slow because it requires full job execution on the remote Spark cluster. Consider using alternative approaches for row counting in interactive scenarios.
+### ✅ Fully Supported (work without issues)
+- **Python UDFs**: User-defined functions written in Python are fully supported
+- **DataFrame actions**: `collect()`, `toPandas()`, and `take()` work as expected
+- **DataFrame transformations**: `select()`, `distinct()`, `groupBy()`, `agg()` work normally
+- **SQL operations**: `spark.sql()` queries work, including DDL operations
+- **Temp views**: `createOrReplaceTempView()` works for SQL queries
+- **Aggregation functions**: `collect_list()`, `concat_ws()`, `sum()`, `max()` work in aggregations
+- **Iceberg catalog DDL**: Namespace creation and table operations work
+- **Local file access**: Reading local files from the Python process works
+- **S3/MinIO file operations**: `binaryFile` format and S3A operations work
+- **File listing**: Reading file metadata from S3/MinIO works
+- **File system functions**: `input_file_name()` works for local files
 
-### Unsupported (raised errors in tests)
-- **DataFrame `foreach()`**: Not supported; raises an error.
-- **RDD operations**: The RDD API is not available in Spark Connect.
-- **Custom serialization**: Operations like `map`, `flatMap`, or custom partition logic are not supported.
-- **DataFrame transformations with Python lambdas**: e.g., `df.filter(lambda x: ...)` is not supported.
+### ❌ Not Supported (raise exceptions)
+- **DataFrame `count()`**: Not supported as an action in this Spark Connect environment (raises `SparkConnectGrpcException`)
+- **DataFrame `foreach()`**: Not supported; raises serialization errors
+- **RDD operations**: The RDD API is not available in Spark Connect
+- **Custom serialization**: Operations like `map()`, `flatMap()` are not supported
+- **DataFrame transformations with Python lambdas**: e.g., `df.filter(lambda row: ...)` is not supported
+- **Direct SparkContext access**: Not available in Spark Connect architecture
+
+### ⚠️ Partially Supported (work but with limitations)
+- **File system functions**: `input_file_name()` works but may fail on certain file operations
+- **Complex aggregations**: Multi-step aggregations work but may be slow
+
+**Note:**
+- `DataFrame.count()` is not supported as an action in this Spark Connect environment. Attempting to use it will raise a `SparkConnectGrpcException`. Use SQL `COUNT(*)` in queries or aggregations instead, or use other supported actions like `collect()` or `toPandas()` for result retrieval.
+
+### 🔄 Performance Considerations
+- **Remote execution**: All Spark operations run on the remote Spark Connect server
+- **Network overhead**: Operations that require data transfer can be slow
+- **Job scheduling**: Each action triggers a remote job, which has overhead
+- **Memory usage**: Large result sets may cause memory issues during transfer
+
+### 📋 Best Practices for Spark Connect
+1. **Use DataFrame API**: Prefer DataFrame operations over RDD operations
+2. **Avoid Python lambdas**: Use SQL expressions or UDFs instead of lambda functions
+3. **Limit result sizes**: Use `take()` or `limit()` instead of `collect()` for large datasets
+4. **Batch operations**: Group multiple operations to reduce network round trips
+5. **Use SQL when possible**: SQL operations are often more efficient than DataFrame API
 
 ### Notes
-- Support for features may vary by Spark version, deployment, and backend configuration. Always test in your environment.
-- For the latest list of supported and unsupported features, see the [official Spark Connect documentation](https://spark.apache.org/docs/latest/connect/index.html#limitations). 
+- Support for features may vary by Spark version, deployment, and backend configuration
+- The Spark Connect architecture means Python code runs locally while Spark operations run remotely
+- For the latest list of supported and unsupported features, see the [official Spark Connect documentation](https://spark.apache.org/docs/latest/connect/index.html#limitations)
+
+## Common Issues and Quirks
+
+### Environment Variables vs Configuration Files
+
+**Issue**: Setting environment variables or configuration keys directly in Python code doesn't work for Spark Connect.
+
+**Why**: Spark Connect is a client-server architecture where:
+- Python code runs locally (your script)
+- Spark operations run remotely (on Spark Connect server)
+- Configuration must be on the server side, not client side
+
+**Example of what doesn't work**:
+```python
+# ❌ This only sets env vars in YOUR local Python process
+import os
+os.environ['AWS_ACCESS_KEY_ID'] = 'sparkuser'
+os.environ['AWS_SECRET_ACCESS_KEY'] = 'sparkpass'
+
+# ❌ This only configures the CLIENT session, not the SERVER
+spark = (
+    SparkSession.builder
+    .remote("sc://localhost:15002")
+    .config("spark.hadoop.fs.s3a.access.key", "sparkuser")  # Client config only
+    .getOrCreate()
+)
+```
+
+**Solution**: Configure the Spark Connect server via `spark-defaults.conf` or Docker environment variables.
+
+### S3A Authentication Chain
+
+S3A authentication follows this chain:
+```
+Your Python Code → Spark Connect Server → S3A Filesystem → MinIO
+```
+
+The authentication happens at the **Spark Connect server level**, not the client level.
+
+### Environment Variables Alone Aren't Enough
+
+**Issue**: Setting environment variables in `docker-compose.yaml` isn't sufficient for S3A authentication.
+
+**Why**: Spark S3A needs explicit configuration to know:
+- Which credentials provider to use
+- What the endpoint is
+- Whether to use path-style access
+- SSL settings
+
+**What you need**:
+```conf
+# Required: Tell Spark to use environment variables
+spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+
+# Required: Tell Spark where MinIO is
+spark.hadoop.fs.s3a.endpoint http://minio:9000
+
+# Optional: Explicit credentials (if not using env vars)
+spark.hadoop.fs.s3a.access.key sparkuser
+spark.hadoop.fs.s3a.secret.key sparkpass
+```
+
+### MinIO User Management
+
+**Issue**: The `admin` user (root user) can't be created via MinIO admin API.
+
+**Why**: The `admin` user is the root user and can't be created through the admin API.
+
+**Solution**: Create a separate user for Spark operations:
+```bash
+# Create a dedicated user for Spark
+mc admin user add minio sparkuser sparkpass
+mc admin policy attach minio readwrite --user sparkuser
+```
+
+### Configuration Precedence
+
+**Important**: Explicit configuration in `spark-defaults.conf` takes precedence over environment variables.
+
+**Example**:
+```conf
+# This will be used (explicit config)
+spark.hadoop.fs.s3a.access.key sparkuser
+
+# This will be ignored (env var)
+AWS_ACCESS_KEY_ID=admin
+```
+
+### Docker Compose Environment Variables
+
+**Issue**: Environment variables in `docker-compose.yaml` only take effect when containers are created, not on restart.
+
+**Solution**: Use `docker-compose down && docker-compose up -d` to recreate containers with new environment variables.
+
+### Endpoint Configuration
+
+**Issue**: Using wrong endpoint hostname causes connection failures.
+
+**Context matters**:
+- **Inside Docker network**: Use `http://minio:9000`
+- **From host machine**: Use `http://localhost:9000`
+- **From Spark Connect server**: Use `http://minio:9000`
+
+### Credentials Provider Configuration
+
+**Critical**: Always include the credentials provider configuration:
+```conf
+spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+```
+
+Without this, Spark S3A doesn't know how to authenticate, even with environment variables set.
+
+### Complete Working Example
+
+Here's a complete working configuration that uses environment variables:
+
+**docker-compose.yaml**:
+```yaml
+spark-connect:
+  environment:
+    - AWS_ACCESS_KEY_ID=sparkuser
+    - AWS_SECRET_ACCESS_KEY=sparkpass
+```
+
+**spark-defaults.conf**:
+```conf
+# S3A Filesystem configuration using environment variables
+spark.hadoop.fs.s3.impl org.apache.hadoop.fs.s3a.S3AFileSystem
+spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+spark.hadoop.fs.s3a.endpoint http://minio:9000
+spark.hadoop.fs.s3a.region us-east-1
+spark.hadoop.fs.s3a.path.style.access true
+spark.hadoop.fs.s3a.connection.ssl.enabled false
+```
+
+The `SimpleAWSCredentialsProvider` will automatically read `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` from environment variables.
+
+### Troubleshooting Checklist
+
+When S3A operations fail with 403 Forbidden:
+
+1. ✅ **Check if user exists in MinIO**: `mc admin user list minio`
+2. ✅ **Verify user permissions**: `mc admin policy list minio --user sparkuser`
+3. ✅ **Check Spark Connect environment**: `docker exec spark-connect env | grep AWS`
+4. ✅ **Verify spark-defaults.conf**: `docker exec spark-connect cat /opt/bitnami/spark/conf/spark-defaults.conf`
+5. ✅ **Check endpoint configuration**: Ensure correct hostname for context
+6. ✅ **Verify credentials provider**: Must include `SimpleAWSCredentialsProvider`
+7. ✅ **Restart Spark Connect**: `docker-compose restart spark-connect`
+8. ✅ **Recreate containers if needed**: `docker-compose down && docker-compose up -d` 

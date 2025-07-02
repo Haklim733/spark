@@ -26,6 +26,14 @@ RUN apt-get update && \
 RUN curl -s https://repo1.maven.org/maven2/org/apache/spark/spark-connect_2.12/${SPARK_VERSION}/spark-connect_2.12-${SPARK_VERSION}.jar -Lo ${SPARK_HOME}/jars/spark-connect_2.12-${SPARK_VERSION}.jar
 RUN curl -s https://repo1.maven.org/maven2/org/apache/spark/spark-connect-client_2.12/${SPARK_VERSION}/spark-connect-client_2.12-${SPARK_VERSION}.jar -Lo ${SPARK_HOME}/jars/spark-connect-client_2.12-${SPARK_VERSION}.jar
 
+# Install Python packages
+ENV PYTHONPATH=$SPARK_HOME/python:$SPARK_HOME/python/lib/py4j-0.10.9.7-src.zip
+
+COPY requirements.txt .
+RUN pip3 install -r requirements.txt
+ENV PYSPARK_PYTHON=python3
+ENV PYSPARK_DRIVER_PYTHON=python3
+
 RUN chmod u+x /opt/bitnami/spark/sbin/* && \
     chmod u+x /opt/bitnami/spark/bin/*
 ENV PATH="/opt/bitnami/spark/sbin:/opt/bitnami/spark/bin:${PATH}"

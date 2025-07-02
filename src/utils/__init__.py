@@ -9,6 +9,7 @@ from .session import (
     SparkVersion,
     IcebergConfig,
     create_spark_session,
+    create_spark_connect_session,
 )
 
 # Logging utilities
@@ -22,6 +23,7 @@ __all__ = [
     "SparkVersion",
     "IcebergConfig",
     "create_spark_session",
+    "create_spark_connect_session",
     # Logging
     "HybridLogger",
     "MetricsTracker",

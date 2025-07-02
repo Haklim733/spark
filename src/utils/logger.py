@@ -193,13 +193,19 @@ class HybridLogger:
 
         # Handle case where spark is None
         if self.spark is not None:
-            self.job_id = self.spark.sparkContext.applicationId
-            # Setup Spark logger for performance metrics (synchronous)
-            self.spark_logger = (
-                self.spark.sparkContext._jvm.org.apache.log4j.LogManager.getLogger(
-                    app_name
+            # Check if this is a Spark Connect session (no sparkContext)
+            try:
+                self.job_id = self.spark.sparkContext.applicationId
+                # Setup Spark logger for performance metrics (synchronous)
+                self.spark_logger = (
+                    self.spark.sparkContext._jvm.org.apache.log4j.LogManager.getLogger(
+                        app_name
+                    )
                 )
-            )
+            except Exception:
+                # Spark Connect session - no sparkContext available
+                self.job_id = f"{app_name}_{int(time.time())}"
+                self.spark_logger = None
         else:
             self.job_id = f"{app_name}_{int(time.time())}"
             self.spark_logger = None

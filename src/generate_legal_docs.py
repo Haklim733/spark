@@ -7,6 +7,7 @@ Implements data validation using schemas from schema.py
 Parallelization using spark not used because of the subfolder creation
 """
 
+import os
 import random
 import uuid
 import json
@@ -38,10 +39,23 @@ def create_minio_client() -> Minio:
     Returns:
         Minio: Configured MinIO client
     """
+    # Use environment variable or default to localhost for local development
+    minio_endpoint = os.getenv("S3_ENDPOINT", "localhost:9000")
+
+    # Strip protocol if present (MinIO client doesn't accept http:// or https://)
+    if minio_endpoint.startswith(("http://", "https://")):
+        minio_endpoint = minio_endpoint.split("://", 1)[1]
+
+    print(f"Connecting to MinIO at: {minio_endpoint}")
+
+    # Use AWS environment variables for consistency with Spark S3A
+    access_key = os.getenv("AWS_ACCESS_KEY_ID", "admin")
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "password")
+
     minio_client = Minio(
-        "minio:9000",
-        access_key="admin",
-        secret_key="password",
+        minio_endpoint,
+        access_key=access_key,
+        secret_key=secret_key,
         secure=False,  # HTTP for local development
     )
     return minio_client

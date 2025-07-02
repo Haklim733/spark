@@ -4,6 +4,8 @@ Spark Connect and MinIO integration tests
 Tests S3-compatible operations with MinIO using Spark Connect
 """
 
+import io
+from minio import Minio
 import pytest
 from pyspark.sql import SparkSession
 from pyspark.sql.types import (
@@ -34,14 +36,32 @@ class TestSparkConnectMinIO:
             .config("spark.hadoop.fs.s3a.secret.key", "password")
             .config("spark.hadoop.fs.s3a.force.path.style", "true")
             .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-            .config(
-                "spark.hadoop.fs.s3a.aws.credentials.provider",
-                "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
-            )
             .config("spark.hadoop.fs.s3a.region", "us-east-1")
             .config("spark.hadoop.fs.s3a.connection.timeout", "60000")
             .config("spark.hadoop.fs.s3a.socket.timeout", "60000")
             .config("spark.hadoop.fs.s3a.max.connections", "100")
+            # Add Iceberg configuration using the working pattern
+            .config(
+                "spark.sql.extensions",
+                "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
+            )
+            .config(
+                "spark.sql.catalog.default", "org.apache.iceberg.spark.SparkCatalog"
+            )
+            .config("spark.sql.defaultCatalog", "default")
+            .config("spark.sql.catalog.default.type", "rest")
+            .config("spark.sql.catalog.default.uri", "http://iceberg-rest:8181")
+            .config(
+                "spark.sql.catalog.default.io-impl",
+                "org.apache.iceberg.aws.s3.S3FileIO",
+            )
+            .config("spark.sql.catalog.default.warehouse", "s3://data/wh")
+            .config("spark.sql.catalog.default.s3.endpoint", "http://minio:9000")
+            .config("spark.sql.catalog.default.s3.access-key", "admin")
+            .config("spark.sql.catalog.default.s3.secret-key", "password")
+            .config("spark.sql.catalog.default.s3.region", "us-east-1")
+            .config("spark.sql.catalog.default.s3.path-style-access", "true")
+            .config("spark.sql.catalog.default.s3.ssl-enabled", "false")
             .getOrCreate()
         )
         yield spark
@@ -337,14 +357,42 @@ class TestSparkConnectMinIO:
 
 def test_standalone_minio_connection():
     """Test standalone MinIO connection without fixtures"""
+
+    # Create a test file in MinIO
+    client = Minio(
+        "localhost:9000",
+        access_key="sparkuser",
+        secret_key="sparkpass",
+        secure=False,
+    )
+    # Make sure the bucket exists
+    if not client.bucket_exists("data"):
+        client.make_bucket("data")
+    # Upload a test file
+    content = b"hello from minio\nthis is a test file"
+    client.put_object(
+        "data",
+        "test.txt",
+        io.BytesIO(content),
+        length=len(content),
+        content_type="text/plain",
+    )
+
     spark = (
-        SparkSession.builder.appName("StandaloneMinIOTest")
-        .remote("sc://localhost:15002")
-        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
-        .config("spark.hadoop.fs.s3a.access.key", "admin")
-        .config("spark.hadoop.fs.s3a.secret.key", "password")
-        .config("spark.hadoop.fs.s3a.force.path.style", "true")
-        .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
+        SparkSession.builder.appName("StandaloneMinIOTest").remote(
+            "sc://localhost:15002"
+        )
+        # setting the below does not matter; spark-defaults.conf is used
+        # .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        # .config(
+        #     "spark.hadoop.fs.s3a.aws.credentials.provider",
+        #     "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+        # )
+        # .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000")
+        # .config("spark.hadoop.fs.s3a.access.key", "sparkuser")
+        # .config("spark.hadoop.fs.s3a.secret.key", "sparkpass")
+        # .config("spark.hadoop.fs.s3a.force.path.style", "true")
+        # .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
         .getOrCreate()
     )
 
@@ -354,7 +402,7 @@ def test_standalone_minio_connection():
 
     # Test simple S3 operation
     try:
-        files_df = spark.read.text("s3a://data/")
+        files_df = spark.read.text("s3a://data/test.txt")
         print(f"✅ Standalone MinIO connection successful")
         # Avoid count() which causes serialization issues in Spark Connect
         schema_fields = files_df.schema.fields

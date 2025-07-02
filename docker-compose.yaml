@@ -34,32 +34,21 @@ services:
       retries: 5
       start_period: 30s
     volumes:
-      - ./src:/home/app/src
-      - ./scripts:/home/app/scripts
-      - ./tests:/home/app/tests
-      - ./pyproject.toml:/home/app/pyproject.toml
-      - ./transform:/home/app/transform
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
-      - ./data/warehouse:/data/warehouse
     ports:
       - "8080:8080"
       - "7077:7077"
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080
   spark-history:
+    image: bitnami/spark:3.5.6
     container_name: spark-history
-    build: docker/spark
     depends_on:
       spark-master:
         condition: service_healthy
     networks:
       - spark-network
     volumes:
-      - ./src:/home/app/src
-      - ./tests:/home/app/tests
-      - ./scripts:/home/app/scripts
-      - ./pyproject.toml:/home/app/pyproject.toml
-      - ./transform:/home/app/transform
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
       - ./data/warehouse:/data/warehouse
@@ -95,8 +84,8 @@ services:
       - SPARK_CONNECT_SERVER_PORT=15002
       - SPARK_CONNECT_SERVER_HOST=0.0.0.0
       - AWS_REGION=us-east-1
-      - AWS_ACCESS_KEY_ID=admin
-      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_ACCESS_KEY_ID=sparkuser
+      - AWS_SECRET_ACCESS_KEY=sparkpass
     volumes:
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
@@ -104,9 +93,9 @@ services:
       - "15002:15002"
     command: spark-submit --class org.apache.spark.sql.connect.service.SparkConnectServer --master spark://spark-master:7077 --jars /opt/bitnami/spark/jars/spark-connect-client_2.12-3.5.6.jar --conf spark.connect.grpc.binding.port=15002 --conf spark.connect.grpc.binding.host=0.0.0.0 --conf spark.connect.grpc.arrow.enabled=true /opt/bitnami/spark/jars/spark-connect_2.12-3.5.6.jar
   spark-worker:
-    build:
+    build: 
       context: .
-      dockerfile: docker/spark-worker
+      dockerfile: docker/spark-worker 
     depends_on:
       spark-master:
         condition: service_healthy
@@ -126,8 +115,8 @@ services:
       - SPARK_EXECUTOR_MEMORY=1G
       - SPARK_WORKLOAD=worker
       - SPARK_LOCAL_IP=spark-worker
-      - AWS_ACCESS_KEY_ID=admin
-      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_ACCESS_KEY_ID=sparkuser
+      - AWS_SECRET_ACCESS_KEY=sparkpass
       - AWS_REGION=us-east-1
       - SPARK_EXECUTOR_LOGS_DIR=/opt/bitnami/spark/logs/executor
       # Spark 3.5 specific configurations
@@ -145,13 +134,8 @@ services:
       retries: 3
       start_period: 45s
     volumes:
-      - ./src:/home/app/src
-      - ./scripts:/home/app/scripts
-      - ./transform:/home/app/transform
-      - ./tests:/home/app/tests
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
-      - ./data/warehouse:/data/warehouse
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     scale: 2  # This creates 2 worker instances
   postgres:
@@ -180,7 +164,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./src/ddl/postgres_init.sql:/docker-entrypoint-initdb.d/01-init-sqlmesh-db.sql
+      - ./scripts/postgres_init.sql:/docker-entrypoint-initdb.d/01-init-sqlmesh-db.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d iceberg"]
       interval: 10s
@@ -279,7 +263,9 @@ services:
       /usr/bin/mc mb minio/data/docs/legal;
       /usr/bin/mc mb minio/data/wh;
       /usr/bin/mc anonymous set public minio/data;
-      echo 'MinIO buckets created successfully';
+      /usr/bin/mc admin user add minio sparkuser sparkpass;
+      /usr/bin/mc admin policy attach minio readwrite --user sparkuser;
+      echo 'MinIO buckets and sparkuser created successfully';
       tail -f /dev/null"
     restart: unless-stopped
 volumes:

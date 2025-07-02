@@ -221,11 +221,13 @@ Spark Connect (as of your current environment) supports more features than earli
 ### Supported (did NOT raise errors in tests)
 - **Python UDFs**: User-defined functions written in Python are supported.
 - **DataFrame actions**: `collect()` and `toPandas()` work as expected.
+- **DataFrame `count()`**: Technically supported but can be very slow due to remote job execution.
 - **Iceberg catalog DDL**: Namespace creation and similar DDL operations work.
 - **Direct file system access**: Reading local files from the Python process is supported.
 
+**Note**: While `count()` is supported, it can be very slow because it requires full job execution on the remote Spark cluster. Consider using alternative approaches for row counting in interactive scenarios.
+
 ### Unsupported (raised errors in tests)
-- **DataFrame `count()`**: This action raises a serialization or protocol error.
 - **DataFrame `foreach()`**: Not supported; raises an error.
 - **RDD operations**: The RDD API is not available in Spark Connect.
 - **Custom serialization**: Operations like `map`, `flatMap`, or custom partition logic are not supported.

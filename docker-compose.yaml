@@ -2,12 +2,11 @@ services:
   spark-master: 
     container_name: spark-master
     hostname: spark-master
-    build: .
+    build: 
+      context: . 
+      dockerfile: docker/spark
     networks:
       - spark-network
-    ports:
-      - "8080:8080"
-      - "7077:7077"
     env_file:
       - .env
     environment:
@@ -28,7 +27,6 @@ services:
       - SPARK_RPC_ENCRYPTION_ENABLED=no
       - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
       - SPARK_SSL_ENABLED=no
-      # Spark 3.5 specific configurations
       - SPARK_VERSION=3.5.6
       - SPARK_MAJOR_VERSION=3.5
     healthcheck:
@@ -46,10 +44,13 @@ services:
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
       - ./data/warehouse:/data/warehouse
-    command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080
   spark-history:
     container_name: spark-history
-    build: .
+    build: docker/spark
     depends_on:
       spark-master:
         condition: service_healthy
@@ -72,9 +73,41 @@ services:
       - SPARK_MAJOR_VERSION=3.5
       - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:///opt/bitnami/spark/logs
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.history.HistoryServer
+  spark-connect:
+    container_name: spark-connect
+    build: 
+      context: .
+      dockerfile: docker/spark-connect
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    networks:
+      - spark-network
+    environment:
+      - SPARK_HOME=/opt/bitnami/spark
+      - SPARK_MASTER=spark://spark-master:7077
+      - SPARK_CONNECT_PORT=15002
+      - SPARK_VERSION=3.5.6
+      - SPARK_MAJOR_VERSION=3.5
+      # Spark Connect configuration
+      - SPARK_CONNECT_GRPC_BINDING_PORT=15002
+      - SPARK_CONNECT_GRPC_BINDING_HOST=0.0.0.0
+      - SPARK_CONNECT_GRPC_ARROW_ENABLED=true
+      # Spark Connect server configuration
+      - SPARK_CONNECT_SERVER_PORT=15002
+      - SPARK_CONNECT_SERVER_HOST=0.0.0.0
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+    volumes:
+      - ./spark-logs:/opt/bitnami/spark/logs
+      - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+    ports:
+      - "15002:15002"
+    command: spark-submit --class org.apache.spark.sql.connect.service.SparkConnectServer --master spark://spark-master:7077 --jars /opt/bitnami/spark/jars/spark-connect-client_2.12-3.5.6.jar --conf spark.connect.grpc.binding.port=15002 --conf spark.connect.grpc.binding.host=0.0.0.0 --conf spark.connect.grpc.arrow.enabled=true /opt/bitnami/spark/jars/spark-connect_2.12-3.5.6.jar
   spark-worker:
     image: bitnami/spark:3.5.6
-    build: .
+    build: docker/spark
     depends_on:
       spark-master:
         condition: service_healthy
@@ -116,13 +149,49 @@ services:
       - ./src:/home/app/src
       - ./scripts:/home/app/scripts
       - ./transform:/home/app/transform
+      - ./tests:/home/app/tests
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
       - ./data/warehouse:/data/warehouse
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     scale: 2  # This creates 2 worker instances
+  postgres:
+    image: bitnami/postgresql:17.5.0
+    container_name: spark-postgres
+    networks:
+      - spark-network
+    environment:
+      - POSTGRES_DB=iceberg
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_SHARED_PRELOAD_LIBRARIES=pg_stat_statements
+      - POSTGRES_MAX_CONNECTIONS=50
+      - POSTGRES_SHARED_BUFFERS=128MB
+      - POSTGRES_EFFECTIVE_CACHE_SIZE=256MB
+      - POSTGRES_MAINTENANCE_WORK_MEM=32MB
+      - POSTGRES_CHECKPOINT_COMPLETION_TARGET=0.9
+      - POSTGRES_WAL_BUFFERS=4MB
+      - POSTGRES_DEFAULT_STATISTICS_TARGET=100
+      - POSTGRES_RANDOM_PAGE_COST=1.1
+      - POSTGRES_EFFECTIVE_IO_CONCURRENCY=200
+      - POSTGRES_WORK_MEM=4MB
+      - POSTGRES_MIN_WAL_SIZE=1GB
+      - POSTGRES_MAX_WAL_SIZE=4GB
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/ddl/postgres_init.sql:/docker-entrypoint-initdb.d/01-init-sqlmesh-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d iceberg"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
   iceberg-rest:
-    image: apache/iceberg-rest-fixture:1.9.1
+    build:
+      context: .
+      dockerfile: docker/iceberg-rest
     container_name: iceberg-rest
     networks:
       - spark-network
@@ -143,9 +212,20 @@ services:
       - CATALOG_S3_CONNECTION_TIMEOUT=60000
       - CATALOG_S3_SOCKET_TIMEOUT=60000
       - CATALOG_S3_MAX_CONNECTIONS=100
+      # PostgreSQL catalog configuration
+      - CATALOG_CATALOG__IMPL=org.apache.iceberg.jdbc.JdbcCatalog
+      - CATALOG_URI=jdbc:postgresql://postgres:5432/iceberg
+      - CATALOG_JDBC_USER=admin
+      - CATALOG_JDBC_PASSWORD=password
+      # Java options to include PostgreSQL JDBC driver
+      - JAVA_OPTS=-cp "/usr/lib/iceberg-rest/*"
     depends_on:
-      - minio
-      - mc
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mc:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8181/health"]
       interval: 30s
@@ -205,6 +285,7 @@ services:
     restart: unless-stopped
 volumes:
   spark-logs:
+  postgres_data:  # Add PostgreSQL volume
 networks:
   spark-network:
     driver: bridge

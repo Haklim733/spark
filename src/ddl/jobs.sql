@@ -1,7 +1,7 @@
 -- Universal Batch Metrics Table for Data Lake
 -- Tracks batch-level metrics across all tables in the data lake
 
-CREATE OR REPLACE TABLE admin.batch_metrics (
+CREATE TABLE IF NOT EXISTS admin.batch_jobs (
     -- Core batch identification
     load_batch_id STRING,
     target_table STRING,  -- Which table was loaded (e.g., 'legal.documents', 'nyc.taxi_data')

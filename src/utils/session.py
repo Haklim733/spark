@@ -9,6 +9,7 @@ from pyspark.sql import SparkSession
 class SparkVersion(Enum):
     """Enum for Spark versions and connection types"""
 
+    SPARK_CONNECT_3_5 = "spark_connect_3_5"  # Spark Connect (3.5)
     SPARK_CONNECT_4_0 = "spark_connect_4_0"  # Spark Connect (4.0+)
     SPARK_3_5 = "spark_3_5"  # Regular PySpark (3.5)
     SPARK_4_0 = "spark_4_0"  # Regular PySpark (4.0)
@@ -183,6 +184,7 @@ def create_spark_session(
     app_name: str = "SparkApp",
     iceberg_config: Optional[IcebergConfig] = None,
     performance_config: Optional[PerformanceConfig] = None,
+    s3_config: Optional[S3FileSystemConfig] = None,
     **additional_configs,
 ) -> SparkSession:
     """
@@ -193,6 +195,7 @@ def create_spark_session(
         app_name: Name of the Spark application (used as prefix for event logs)
         iceberg_config: Optional IcebergConfig for Iceberg integration
         performance_config: Optional PerformanceConfig for performance tuning
+        s3_config: Optional S3FileSystemConfig for S3/MinIO access without Iceberg
         **additional_configs: Additional Spark configurations (overrides defaults)
 
     Returns:
@@ -204,19 +207,34 @@ def create_spark_session(
     if not performance_config:
         performance_config = PerformanceConfig()
 
-    if not iceberg_config:
-        iceberg_config = IcebergConfig(s3_config=S3FileSystemConfig())
-
-    # Merge configurations: additional_configs override performance configs
+    # Start with performance configs
     merged_configs = {
         **performance_config.get_spark_configs(),
-        **iceberg_config.get_spark_configs(),
         "spark.eventLog.enabled": "true",
         "spark.eventLog.dir": f"file:///opt/bitnami/spark/logs/app/{app_name}",
         **additional_configs,
     }
 
+    # Add S3 configuration (always needed for MinIO access)
+    if s3_config:
+        merged_configs.update(s3_config.get_spark_configs())
+    elif iceberg_config:
+        # If no s3_config but iceberg_config provided, use its s3_config
+        merged_configs.update(iceberg_config.s3_config.get_spark_configs())
+    else:
+        # Default S3 config for MinIO access
+        default_s3_config = S3FileSystemConfig()
+        merged_configs.update(default_s3_config.get_spark_configs())
+
+    # Add Iceberg configuration only if explicitly provided
+    if iceberg_config:
+        merged_configs.update(iceberg_config.get_spark_configs())
+
     if spark_version == SparkVersion.SPARK_CONNECT_4_0:
+        return _create_spark_connect_session(
+            app_name=app_name, spark_params=merged_configs
+        )
+    elif spark_version == SparkVersion.SPARK_CONNECT_3_5:
         return _create_spark_connect_session(
             app_name=app_name, spark_params=merged_configs
         )

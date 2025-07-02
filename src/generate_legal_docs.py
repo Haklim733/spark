@@ -113,7 +113,7 @@ def generate_template_data(
     current_date = fake.date_between(start_date="-1y", end_date="today").strftime(
         "%Y-%m-%d"
     )
-    current_year = datetime.now().year
+    current_year = datetime.now(timezone.utc).year
 
     template_data = {
         "document_number": f"{document_number:04d}",
@@ -276,8 +276,8 @@ def save_documents_to_minio(
     # Create MinIO client
     minio_client = create_minio_client()
 
-    # Get current date for directory structure
-    current_date = datetime.now().strftime("%Y%m%d")
+    # Get current date for directory structure (use UTC to avoid timezone issues)
+    current_date = datetime.now(timezone.utc).strftime("%Y%m%d")
 
     total_saved = 0
     total_metadata_saved = 0
@@ -447,7 +447,7 @@ def generate_specific_document_type(
                 "filename": "",  # Will be set during save
                 "file_path": "",  # Will be set during save
                 "metadata_path": "",  # Will be set during save
-                "generated_at": datetime.now(),
+                "generated_at": datetime.now(timezone.utc),
             }
 
             documents.append(document)

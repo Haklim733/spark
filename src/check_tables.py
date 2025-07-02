@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from utils.session import create_spark_session, SparkVersion, IcebergConfig
+from utils.session import create_spark_session, SparkVersion
 
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "admin")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "password")
@@ -46,7 +46,11 @@ def main():
             print(f"❌ Error showing databases: {e}")
 
         # Check tables in different namespaces
-        namespaces = ["nyc", "legal"]
+        namespaces = [
+            "legal",
+            "nyc_taxi",
+            "admin",
+        ]  # Check all namespaces used in this setup
 
         for namespace in namespaces:
             check_namespace_tables(spark, namespace)

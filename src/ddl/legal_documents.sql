@@ -1,7 +1,7 @@
 -- Legal Documents Table DDL for ELT approach
 -- This table stores raw legal documents with metadata as individual columns
 
-CREATE OR REPLACE TABLE legal.documents (
+CREATE TABLE IF NOT EXISTS legal.documents (
     -- Core document fields
     document_id STRING,
     document_type STRING,

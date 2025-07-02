@@ -1,0 +1,25 @@
+# Use the official iceberg-rest-fixture image as base
+FROM apache/iceberg-rest-fixture:1.9.1
+
+# Install curl to download the PostgreSQL JDBC driver
+USER root
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+# Download PostgreSQL JDBC driver to the Iceberg REST lib directory
+RUN curl -L -o /usr/lib/iceberg-rest/postgresql-42.7.3.jar \
+    https://jdbc.postgresql.org/download/postgresql-42.7.3.jar
+
+# Set permissions
+RUN chown iceberg:iceberg /usr/lib/iceberg-rest/postgresql-42.7.3.jar
+
+# Create a custom entrypoint script that includes the JDBC driver
+RUN echo '#!/bin/bash' > /usr/local/bin/start-iceberg-rest.sh && \
+    echo 'exec java -cp "/usr/lib/iceberg-rest/*" org.apache.iceberg.rest.RESTCatalogServer "$@"' >> /usr/local/bin/start-iceberg-rest.sh && \
+    chmod +x /usr/local/bin/start-iceberg-rest.sh
+
+# Switch back to iceberg user
+USER iceberg
+
+# Use our custom entrypoint
+ENTRYPOINT ["/usr/local/bin/start-iceberg-rest.sh"]
+

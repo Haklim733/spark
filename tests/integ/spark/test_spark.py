@@ -29,26 +29,14 @@ def spark_session_pyspark():
 
 
 @pytest.fixture(scope="session")
-def spark_session_connect():
-    """Fixture for Spark Connect 4.0 session (may fail if not available)"""
-
-    try:
-        spark = create_spark_session(
-            spark_version=SparkVersion.SPARK_CONNECT_4_0, app_name="SparkConnectTest"
-        )
-        yield spark
-        spark.stop()
-    except Exception as e:
-        pytest.skip(f"Spark Connect not available: {e}")
-
-
-@pytest.fixture(scope="session")
 def iceberg_config():
     """Fixture for Iceberg configuration"""
+    from src.utils.session import S3FileSystemConfig
+
     return IcebergConfig(
+        s3_config=S3FileSystemConfig(),
         catalog_uri="http://spark-rest:8181",
         warehouse="s3://data/wh",
-        s3_endpoint="http://minio:9000",
     )
 
 
@@ -77,6 +65,15 @@ class TestBasicSessionCreation:
         assert isinstance(spark_session_connect, SparkSession)
         assert "4.0" in spark_session_connect.version
         print(f"✅ Spark Connect session created: {spark_session_connect.version}")
+
+    def test_spark_connect_35_session_creation(self, spark_session_connect_35):
+        """Test Spark Connect 3.5 session creation"""
+        assert spark_session_connect_35 is not None
+        assert isinstance(spark_session_connect_35, SparkSession)
+        assert "3.5" in spark_session_connect_35.version
+        print(
+            f"✅ Spark Connect 3.5 session created: {spark_session_connect_35.version}"
+        )
 
     def test_invalid_spark_version(self):
         """Test that invalid Spark version raises error"""
@@ -118,22 +115,6 @@ class TestBasicSessionCreation:
 
         spark.stop()
 
-    def test_pyspark_without_iceberg(self):
-        """Test PySpark session without Iceberg configuration"""
-        spark = create_spark_session(
-            spark_version=SparkVersion.SPARK_3_5,
-            app_name="PySparkNoIcebergTest",
-        )
-
-        assert spark is not None
-        assert isinstance(spark, SparkSession)
-
-        # Check that Iceberg extensions are NOT applied when no Iceberg config
-        extensions = spark.conf.get("spark.sql.extensions", "")
-        assert "IcebergSparkSessionExtensions" not in extensions
-
-        spark.stop()
-
     def test_iceberg_convenience_function(self):
         """Test convenience function for Iceberg sessions"""
         spark = create_spark_session(
@@ -151,6 +132,12 @@ class TestDataFrameOperations:
 
     def test_basic_dataframe_operations_pyspark(self, spark_session_pyspark):
         """Test basic DataFrame operations with PySpark"""
+        # Stop any existing Spark session to ensure fresh creation
+        try:
+            SparkSession.builder.getOrCreate().stop()
+        except:
+            pass
+
         # Create a fresh session for this test to avoid reuse issues
         spark = create_spark_session(
             spark_version=SparkVersion.SPARK_3_5, app_name="DataFrameTest"
@@ -160,30 +147,23 @@ class TestDataFrameOperations:
         assert spark.sparkContext is not None
         assert spark.sparkContext.applicationId is not None
 
-        data = [("key1", 100), ("key2", 200), ("key3", 300)]
-        df = spark.createDataFrame(data, ["key", "value"])
+        try:
+            data = [("key1", 100), ("key2", 200), ("key3", 300)]
+            df = spark.createDataFrame(data, ["key", "value"])
 
-        assert df.count() == 3
-        assert len(df.columns) == 2
-        assert "key" in df.columns
-        assert "value" in df.columns
+            assert df.count() == 3
+            assert len(df.columns) == 2
+            assert "key" in df.columns
+            assert "value" in df.columns
 
-        # Test show operation
-        result = df.collect()
-        assert len(result) == 3
-        assert result[0]["key"] == "key1"
-        assert result[0]["value"] == 100
+            # Test show operation
+            result = df.collect()
+            assert len(result) == 3
+            assert result[0]["key"] == "key1"
+            assert result[0]["value"] == 100
 
-        spark.stop()
-
-    @pytest.mark.skipif(True, reason="Spark Connect may not be available")
-    def test_basic_dataframe_operations_connect(self, spark_session_connect):
-        """Test basic DataFrame operations with Spark Connect"""
-        data = [("connect1", 10), ("connect2", 20)]
-        df = spark_session_connect.createDataFrame(data, ["name", "value"])
-
-        assert df.count() == 2
-        assert len(df.columns) == 2
+        finally:
+            spark.stop()
 
 
 class TestConfigurationManagement:

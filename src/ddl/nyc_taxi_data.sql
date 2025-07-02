@@ -1,7 +1,7 @@
 -- NYC Taxi Data Table DDL
 -- This table stores NYC taxi trip data
 
-CREATE OR REPLACE TABLE nyc_taxi_data.yellow_tripdata (
+CREATE TABLE IF NOT EXISTS nyc_taxi.yellow_trip 
     VendorID BIGINT,
     tpep_pickup_datetime TIMESTAMP,
     tpep_dropoff_datetime TIMESTAMP,

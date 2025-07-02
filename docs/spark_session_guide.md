@@ -18,6 +18,7 @@ The new system provides:
 from utils import SparkVersion
 
 # Available options:
+SparkVersion.SPARK_CONNECT_3_5  # Spark Connect (3.5)
 SparkVersion.SPARK_CONNECT_4_0  # Spark Connect (4.0+)
 SparkVersion.SPARK_3_5          # Regular PySpark (3.5)
 SparkVersion.SPARK_4_0          # Regular PySpark (4.0)
@@ -57,6 +58,12 @@ spark = create_spark_session(
 # Create Spark Connect 4.0 session
 spark = create_spark_session(
     spark_version=SparkVersion.SPARK_CONNECT_4_0,
+    app_name="MyApp"
+)
+
+# Create Spark Connect 3.5 session
+spark = create_spark_session(
+    spark_version=SparkVersion.SPARK_CONNECT_3_5,
     app_name="MyApp"
 )
 ```
@@ -118,6 +125,12 @@ spark = create_iceberg_spark_session(
     spark_version=SparkVersion.SPARK_CONNECT_4_0,
     app_name="IcebergConnectApp"
 )
+
+# Spark Connect 3.5 with Iceberg
+spark = create_iceberg_spark_session(
+    spark_version=SparkVersion.SPARK_CONNECT_3_5,
+    app_name="IcebergConnect35App"
+)
 ```
 
 ## Configuration Examples
@@ -137,6 +150,17 @@ spark = create_spark_session(
 spark = create_spark_session(
     spark_version=SparkVersion.SPARK_CONNECT_4_0,
     app_name="ConnectApp",
+    spark_executor_memory="4g",
+    spark_driver_memory="2g"
+)
+```
+
+### Spark Connect 3.5 with Custom Config
+
+```python
+spark = create_spark_session(
+    spark_version=SparkVersion.SPARK_CONNECT_3_5,
+    app_name="Connect35App",
     spark_executor_memory="4g",
     spark_driver_memory="2g"
 )
@@ -189,3 +213,24 @@ python src/examples/session_examples.py
 4. **Extensibility**: Easy to add new Spark versions or configurations
 5. **Dependency Injection**: Clean separation of concerns for Iceberg config
 6. **Backward Compatibility**: Old functions still work with deprecation warnings 
+
+## Limitations: Unsupported and Supported Functions in Spark Connect
+
+Spark Connect (as of your current environment) supports more features than earlier versions, but some limitations remain. Based on actual tests, here is what is and isn't supported:
+
+### Supported (did NOT raise errors in tests)
+- **Python UDFs**: User-defined functions written in Python are supported.
+- **DataFrame actions**: `collect()` and `toPandas()` work as expected.
+- **Iceberg catalog DDL**: Namespace creation and similar DDL operations work.
+- **Direct file system access**: Reading local files from the Python process is supported.
+
+### Unsupported (raised errors in tests)
+- **DataFrame `count()`**: This action raises a serialization or protocol error.
+- **DataFrame `foreach()`**: Not supported; raises an error.
+- **RDD operations**: The RDD API is not available in Spark Connect.
+- **Custom serialization**: Operations like `map`, `flatMap`, or custom partition logic are not supported.
+- **DataFrame transformations with Python lambdas**: e.g., `df.filter(lambda x: ...)` is not supported.
+
+### Notes
+- Support for features may vary by Spark version, deployment, and backend configuration. Always test in your environment.
+- For the latest list of supported and unsupported features, see the [official Spark Connect documentation](https://spark.apache.org/docs/latest/connect/index.html#limitations). 

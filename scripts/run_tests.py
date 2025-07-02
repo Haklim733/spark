@@ -37,25 +37,34 @@ def run_docker_test(
     # Add environment variables
     cmd.extend(["-e", "AWS_ACCESS_KEY_ID=admin"])
     cmd.extend(["-e", "AWS_SECRET_ACCESS_KEY=password"])
+    cmd.extend(["-e", "PYTHONPATH=/home/app:/opt/bitnami/spark/python"])
 
-    # Add container and python command
-    cmd.extend([container, "python", "-m", "pytest"])
+    # Build the pytest command with options
+    pytest_cmd = "python -m pytest"
 
-    # Add test path
-    if test_file:
-        cmd.append(f"/home/app/tests/{test_file}")
-    else:
-        cmd.append("/home/app/tests/")
-
-    # Add options
     if verbose:
-        cmd.append("-v")
+        pytest_cmd += " -v"
 
     if test_marker:
-        cmd.extend(["-m", test_marker])
+        pytest_cmd += f" -m {test_marker}"
 
     if coverage:
-        cmd.extend(["--cov=/home/app/src", "--cov-report=html", "--cov-report=term"])
+        pytest_cmd += " --cov=/home/app/src --cov-report=html --cov-report=term"
+
+    # Add container and python command with working directory
+    if test_file:
+        # For specific test file, construct the full command
+        cmd.extend(
+            [
+                container,
+                "bash",
+                "-c",
+                f"cd /home/app && {pytest_cmd} tests/{test_file}",
+            ]
+        )
+    else:
+        # For all tests, use the default approach
+        cmd.extend([container, "bash", "-c", f"cd /home/app && {pytest_cmd} tests/"])
 
     print(f"Running: {' '.join(cmd)}")
 

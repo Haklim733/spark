@@ -32,6 +32,7 @@ gateways:
         spark.sql.catalog.iceberg.catalog-impl: org.apache.iceberg.rest.RESTCatalog
         spark.sql.catalog.iceberg.uri: http://localhost:8181
         spark.sql.catalog.iceberg.warehouse: s3://data/wh
+        # S3 configuration for Iceberg catalog
         spark.sql.catalog.iceberg.s3.endpoint: http://localhost:9000
         spark.sql.catalog.iceberg.s3.access-key: admin
         spark.sql.catalog.iceberg.s3.secret-key: password
@@ -41,6 +42,7 @@ gateways:
         spark.sql.catalog.iceberg.s3.connection-timeout: 60000
         spark.sql.catalog.iceberg.s3.socket-timeout: 60000
         spark.sql.catalog.iceberg.s3.max-connections: 100
+        # Hadoop S3 configuration for general S3 access
         spark.hadoop.fs.s3.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
         spark.hadoop.fs.s3a.access.key: admin
         spark.hadoop.fs.s3a.secret.key: password
@@ -48,8 +50,8 @@ gateways:
         spark.hadoop.fs.s3a.region: us-east-1
         spark.hadoop.fs.s3a.path.style.access: true
         spark.hadoop.fs.s3a.connection.ssl.enabled: false
-        spark.hadoop.fs.s3a.metrics.enabled: true
-        spark.hadoop.fs.s3a.metrics.reporting.interval: 60
+        spark.hadoop.fs.s3a.aws.credentials.provider: org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+        spark.hadoop.fs.s3a.connection.maximum: 100
         spark.hadoop.fs.s3a.connection.timeout: 60000
         spark.hadoop.fs.s3a.socket.timeout: 60000
         spark.hadoop.fs.s3a.max.connections: 100
@@ -57,6 +59,8 @@ gateways:
         spark.hadoop.fs.s3a.threads.core: 10
         spark.hadoop.fs.s3a.buffer.dir: /tmp
         spark.hadoop.fs.s3a.experimental.input.fadvise: normal
+        spark.hadoop.fs.s3a.metrics.enabled: true
+        spark.hadoop.fs.s3a.metrics.reporting.interval: 60
     test_connection:
       type: spark
       config:
@@ -69,21 +73,21 @@ gateways:
   prod:
     connection:
       type: postgres
-      host: {{ env_var('PG_HOST') }}
-      port: {{ env_var('PG_PORT') }}
-      user: {{ env_var('PG_USER') }}
-      password: {{ env_var('PG_PASSWORD') }}
-      database: postgres
+      host: localhost
+      port: 5432
+      user: admin 
+      password: password
+      database: iceberg
       register_comments: True
       pre_ping: False
       pretty_sql: True
     state_connection:
       type: postgres
-      host: {{ env_var('PG_HOST') }}
-      port: {{ env_var('PG_PORT') }}
-      user: {{ env_var('PG_USER') }}
-      password: {{ env_var('PG_PASSWORD') }}
-      database: postgres
+      host: localhost
+      port: 5432
+      user: admin
+      password: password
+      database: sqlmesh 
 
 default_gateway: spark
 

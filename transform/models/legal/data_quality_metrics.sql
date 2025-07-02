@@ -1,6 +1,7 @@
 MODEL (
     name legal.data_quality_metrics,
     kind FULL,
+    grain [metric_date, metric_type],
     description "Data quality metrics for legal documents using ELT approach"
 );
 

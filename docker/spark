@@ -36,6 +36,11 @@ RUN curl https://repo1.maven.org/maven2/org/apache/spark/spark-avro_2.12/${SPARK
     -Lo ${SPARK_HOME}/jars/spark-avro_2.12-${SPARK_VERSION}.jar
 RUN curl -s https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/${ICEBERG_VERSION}/iceberg-aws-bundle-${ICEBERG_VERSION}.jar -Lo ${SPARK_HOME}/jars/iceberg-aws-bundle-${ICEBERG_VERSION}.jar
 
+# Add PostgreSQL JDBC driver for Iceberg catalog
+RUN curl -s https://jdbc.postgresql.org/download/postgresql-42.7.3.jar -Lo ${SPARK_HOME}/jars/postgresql-42.7.3.jar
+
+
+
 # RUN curl https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar \
 #     -Lo ${SPARK_HOME}/jars/commons-pool2-2.11.1.jar
 
@@ -53,9 +58,11 @@ RUN pip3 install -r requirements.txt
 ENV PYSPARK_PYTHON=python3
 ENV PYSPARK_DRIVER_PYTHON=python3
 
-RUN chmod u+x /opt//bitnami/spark/sbin/* && \
+RUN chmod u+x /opt/bitnami/spark/sbin/* && \
     chmod u+x /opt/bitnami/spark/bin/*
-ENV PATH="/opt/spark/sbin:/opt/spark/bin:${PATH}"
+ENV PATH="/opt/bitnami/spark/sbin:/opt/bitnami/spark/bin:${PATH}"
+
+
 
 # COPY ./scripts/start-spark.sh /opt/bitnami/spark/start-spark.sh
 # RUN chmod +x /opt/bitnami/spark/start-spark.sh

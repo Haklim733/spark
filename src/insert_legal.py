@@ -14,14 +14,14 @@ import sys
 from typing import List, Dict, Any, Set
 
 from pyspark.sql import SparkSession
-from utils.logger import HybridLogger
-from utils.session import (
+from src.utils.logger import HybridLogger
+from src.utils.session import (
     SparkVersion,
     S3FileSystemConfig,
 )
 
 # Import shared legal document models
-from schemas.schema import SchemaManager
+from src.schemas.schema import SchemaManager
 
 # Initialize SchemaManager
 schema_manager = SchemaManager()
@@ -216,7 +216,7 @@ def track_batch_load(spark, table_name, batch_id, source_files, load_timestamp=N
         Dict with batch tracking results
     """
     if load_timestamp is None:
-        load_timestamp = datetime.now()
+        load_timestamp = datetime.now(timezone.utc)
 
     tracking_results = {
         "batch_id": batch_id,
@@ -374,7 +374,7 @@ def insert_stream(
         StreamingQuery object for monitoring and control
     """
     if batch_id is None:
-        batch_id = f"stream_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        batch_id = f"stream_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
 
     print(f"🔄 Starting stream processing from {stream_source} into {table_name}")
     print(f"Stream ID: {batch_id}")
@@ -412,7 +412,7 @@ def insert_files(
     """
     # Generate batch ID if not provided
     if batch_id is None:
-        batch_id = f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        batch_id = f"batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
 
     print(f"🔄 ELT: Loading files from {docs_dir} into {table_name}")
     print(f"Batch ID: {batch_id}")
@@ -514,7 +514,7 @@ def _insert_files_sequential(spark, file_groups, table_name, batch_id):
     successful_inserts = 0
     failed_inserts = 0
     all_source_files = []
-    load_timestamp = datetime.now()
+    load_timestamp = datetime.now(timezone.utc)
 
     for format_type, files in file_groups.items():
         if not files:
@@ -564,7 +564,7 @@ def _insert_files_sequential(spark, file_groups, table_name, batch_id):
                     "document_id": filename,
                     "document_type": "unknown",
                     "raw_text": "",
-                    "generation_date": datetime.now(),
+                    "generation_date": datetime.now(timezone.utc),
                     "file_path": str(file_path),
                     "document_length": 0,
                     "word_count": 0,
@@ -704,7 +704,7 @@ def _process_text_file(file_path, spark=None):
                 "document_id": doc_id,
                 "document_type": doc_type,
                 "raw_text": content,
-                "generation_date": datetime.now(),
+                "generation_date": datetime.now(timezone.utc),
                 "file_path": file_path_str,
                 "document_length": doc_length,
                 "word_count": word_count,
@@ -736,7 +736,7 @@ def _process_text_file(file_path, spark=None):
                 "document_id": filename,
                 "document_type": "unknown",
                 "raw_text": "",
-                "generation_date": datetime.now(),
+                "generation_date": datetime.now(timezone.utc),
                 "file_path": str(file_path),
                 "document_length": 0,
                 "word_count": 0,
@@ -819,7 +819,7 @@ def _insert_files_batch(spark, file_groups, table_name, batch_id, max_workers=No
     print("🔄 Using PySpark RDD for distributed file processing and insertion")
 
     all_source_files = []
-    load_timestamp = datetime.now()
+    load_timestamp = datetime.now(timezone.utc)
     batch_start_time = time.time()
 
     # Step 1: Create RDD of file paths for distributed processing
@@ -916,7 +916,7 @@ def _create_error_document(file_path, batch_id, load_timestamp, error_msg):
         "document_id": filename,
         "document_type": "unknown",
         "raw_text": "",
-        "generation_date": datetime.now(),
+        "generation_date": datetime.now(timezone.utc),
         "file_path": str(file_path),
         "document_length": 0,
         "word_count": 0,
@@ -1088,8 +1088,7 @@ def record_batch_metrics_to_table(
 
         # Convert to DataFrame and insert
         df = spark.createDataFrame([batch_metrics])
-        df.writeTo("admin.batch_metrics").append()
-
+        df.writeTo("admin.ppend()
         print(f"✅ Batch metrics recorded for {batch_id}")
         print(f"   - Status: {validation_result['validation_status']}")
         print(f"   - Duration: {batch_duration_ms:.0f}ms")

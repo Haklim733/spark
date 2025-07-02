@@ -7,7 +7,7 @@ import threading
 import time
 from typing import Dict, Any, Optional
 from pyspark.sql import SparkSession
-from utils.session import create_spark_session
+from .session import create_spark_session
 from datetime import datetime
 from enum import Enum
 
@@ -172,7 +172,14 @@ class HybridLogger:
 
         # Create Spark session if managing it
         if manage_spark and spark is None:
-            self.spark = create_spark_session(app_name=app_name, **self.spark_config)
+            # Extract s3_config from spark_config if present
+            s3_config = (
+                self.spark_config.pop("s3_config", None) if self.spark_config else None
+            )
+
+            self.spark = create_spark_session(
+                app_name=app_name, s3_config=s3_config, **self.spark_config
+            )
             self._owns_spark = True
         else:
             self.spark = spark

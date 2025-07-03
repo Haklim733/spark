@@ -21,11 +21,6 @@
             ],
             "description": "Type of legal document"
         },
-        "content_length": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Length of the document content in characters"
-        },
         "generated_at": {
             "type": "string",
             "format": "date-time",
@@ -36,14 +31,37 @@
             "type": "string",
             "default": "soli_legal_document_generator",
             "description": "Source system identifier"
+        },
+        "language": {
+            "type": "string",
+            "enum": ["en", "es", "fr", "de", "it", "pt"],
+            "default": "en",
+            "description": "Language of the document content"
+        },
+        "file_size": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Size of the file in bytes, retrieved from MinIO metadata"
+        },
+        "file_path": {
+            "type": "string",
+            "description": "Path to the file in MinIO storage"
+        },
+        "method": {
+            "type": "string",
+            "enum": ["sequential", "spark", "local", "parallel_batch", "distributed"],
+            "description": "Processing method used for document ingestion"
         }
     },
     "required": [
         "document_id",
         "document_type",
-        "content_length",
         "generated_at",
-        "source"
+        "source",
+        "language",
+        "file_size",
+        "file_path",
+        "method"
     ],
     "additionalProperties": false
 }

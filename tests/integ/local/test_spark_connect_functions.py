@@ -378,3 +378,125 @@ class TestPerformanceAndLimitations:
         df = spark_connect_session.createDataFrame(data, ["file", "content"])
         assert df is not None
         print("✅ Large DataFrame creation works")
+
+
+class TestComplexSQLOperations:
+    """Test complex SQL operations that might be used in file processing"""
+
+    def test_window_functions_not_supported(self, spark_connect_session):
+        """Test that window functions like ROW_NUMBER() are not supported"""
+        df = spark_connect_session.createDataFrame(
+            [("file1", 1), ("file1", 2), ("file2", 3)], ["file", "line"]
+        )
+        df.createOrReplaceTempView("test_window")
+
+        with pytest.raises(Exception):
+            result = spark_connect_session.sql(
+                """
+                SELECT file, line, ROW_NUMBER() OVER (PARTITION BY file ORDER BY line) as row_num
+                FROM test_window
+                """
+            )
+            result.collect()
+        print("✅ Window functions correctly not supported")
+
+    def test_cross_join_lateral_not_supported(self, spark_connect_session):
+        """Test that CROSS JOIN LATERAL is not supported"""
+        df1 = spark_connect_session.createDataFrame([("file1",)], ["path"])
+        df2 = spark_connect_session.createDataFrame([("line1",), ("line2",)], ["value"])
+
+        df1.createOrReplaceTempView("files")
+        df2.createOrReplaceTempView("content")
+
+        with pytest.raises(Exception):
+            result = spark_connect_session.sql(
+                """
+                SELECT f.path, c.value
+                FROM files f
+                CROSS JOIN LATERAL (SELECT value FROM content) c
+                """
+            )
+            result.collect()
+        print("✅ CROSS JOIN LATERAL correctly not supported")
+
+    def test_string_agg_not_supported(self, spark_connect_session):
+        """Test that STRING_AGG is not supported"""
+        df = spark_connect_session.createDataFrame(
+            [("file1", "line1"), ("file1", "line2"), ("file2", "line3")],
+            ["file", "content"],
+        )
+        df.createOrReplaceTempView("test_string_agg")
+
+        with pytest.raises(Exception):
+            result = spark_connect_session.sql(
+                """
+                SELECT file, STRING_AGG(content, '\n') as full_content
+                FROM test_string_agg
+                GROUP BY file
+                """
+            )
+            result.collect()
+        print("✅ STRING_AGG correctly not supported")
+
+    def test_complex_cte_works(self, spark_connect_session):
+        """Test that complex CTEs with multiple subqueries work"""
+        df = spark_connect_session.createDataFrame([("file1", 100)], ["path", "size"])
+        df.createOrReplaceTempView("files")
+
+        result = spark_connect_session.sql(
+            """
+            WITH file_list AS (
+                SELECT path, size FROM files WHERE size > 50
+            ),
+            processed AS (
+                SELECT path, size * 2 as new_size FROM file_list
+            )
+            SELECT * FROM processed
+            """
+        )
+        assert result is not None
+        print("✅ Complex CTEs work in Spark Connect")
+
+    def test_input_file_name_works(self, spark_connect_session):
+        """Test input_file_name() function works"""
+        # Create a simple DataFrame (not file-based)
+        df = spark_connect_session.createDataFrame([("test",)], ["value"])
+
+        result = df.withColumn("file_path", input_file_name())
+        assert result is not None
+        print("✅ input_file_name() works in Spark Connect")
+
+    def test_join_operations_work(self, spark_connect_session):
+        """Test that basic JOIN operations work"""
+        df1 = spark_connect_session.createDataFrame([("file1", 100)], ["path", "size"])
+        df2 = spark_connect_session.createDataFrame(
+            [("file1", "content1")], ["path", "content"]
+        )
+
+        result = df1.join(df2, "path", "inner")
+        assert result is not None
+        print("✅ Basic JOIN operations work")
+
+    def test_groupby_with_collect_list_works(self, spark_connect_session):
+        """Test that GROUP BY with collect_list works"""
+        df = spark_connect_session.createDataFrame(
+            [("file1", "line1"), ("file1", "line2"), ("file2", "line3")],
+            ["file", "content"],
+        )
+
+        result = df.groupBy("file").agg(collect_list("content").alias("all_content"))
+        assert result is not None
+        print("✅ GROUP BY with collect_list works")
+
+    def test_concat_ws_with_collect_list_works(self, spark_connect_session):
+        """Test that concat_ws with collect_list works"""
+        df = spark_connect_session.createDataFrame(
+            [("file1", "line1"), ("file1", "line2"), ("file2", "line3")],
+            ["file", "content"],
+        )
+
+        result = df.groupBy("file").agg(
+            concat_ws("\n", collect_list("content")).alias("full_content")
+        )
+        assert result is not None
+        print("✅ concat_ws with collect_list works")

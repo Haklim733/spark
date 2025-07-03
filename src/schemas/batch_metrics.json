@@ -5,97 +5,90 @@
   "schema_version": "v1",
   "type": "object",
   "properties": {
-    "load_batch_id": {
+    "job_id": {
+      "type": "string",
+      "description": "Job/process identifier for operational tracking"
+    },
+    "batch_id": {
       "type": "string",
       "pattern": "^[a-zA-Z0-9_-]+$",
       "description": "Unique batch identifier for tracking and reprocessing"
     },
-    "load_timestamp": {
+    "batch_start_time": {
       "type": "string",
       "format": "date-time",
-      "description": "When the batch was loaded"
+      "description": "When batch processing started"
     },
-    "load_source": {
+    "batch_end_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When batch processing completed"
+    },
+    "source": {
       "type": "string",
       "enum": ["local", "minio", "s3", "hdfs", "api"],
       "description": "Source system identifier"
-    },
-    "load_job_id": {
-      "type": "string",
-      "description": "Job/process identifier for operational tracking"
-    },
-    "load_version": {
-      "type": "string",
-      "description": "Schema/process version for compatibility tracking"
     },
     "target_table": {
       "type": "string",
       "description": "Target table name for the batch load"
     },
-    "metadata_schema_version": {
-      "type": "string",
-      "description": "Version of metadata schema used for the loaded data"
-    },
     "files_processed": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total number of files processed in this batch"
+      "description": "Total number of files attempted to process in this batch (operational metric)"
     },
     "files_loaded": {
       "type": "integer",
       "minimum": 0,
-      "description": "Number of files successfully loaded"
+      "description": "Number of files successfully loaded into the target table (operational metric)"
     },
     "files_failed": {
       "type": "integer",
       "minimum": 0,
-      "description": "Number of files that failed to load"
+      "description": "Number of files that failed to load due to file system, format, or access issues (operational metric)"
     },
     "files_missing": {
       "type": "integer",
       "minimum": 0,
-      "description": "Number of files that were expected but not found/processed"
+      "description": "Number of files that were expected but not found or accessible (operational metric)"
     },
     "files_successful": {
       "type": "integer",
       "minimum": 0,
-      "description": "Number of files that loaded successfully (same as files_loaded)"
+      "description": "Number of files that loaded successfully (same as files_loaded, operational metric)"
     },
     "total_records_processed": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total number of records processed (usually same as files_processed for one file per row)"
+      "description": "Total number of individual records/data rows processed across all files (data quality metric)"
     },
     "total_records_loaded": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total number of records successfully loaded"
+      "description": "Total number of individual records successfully loaded into the target table (data quality metric)"
     },
     "total_records_failed": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total number of records that failed to load"
+      "description": "Total number of individual records that failed to load due to schema validation, data quality, or business rule violations (data quality metric)"
     },
     "total_records_missing": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total number of records that were expected but not found"
+      "description": "Total number of individual records that were expected but not found or were empty/null (data quality metric)"
     },
-    "load_duration_ms": {
+    "batch_duration_ms": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total load duration in milliseconds"
+      "description": "Batch processing duration in milliseconds"
     },
     "total_file_size_bytes": {
       "type": "integer",
       "minimum": 0,
       "description": "Total size of all files processed in bytes"
     },
-    "avg_processing_rate": {
-      "type": "number",
-      "minimum": 0,
-      "description": "Average processing rate in files per second"
-    },
+
     "error_codes": {
       "type": "object",
       "additionalProperties": {
@@ -119,15 +112,27 @@
     }
   },
   "required": [
-    "load_batch_id",
-    "load_timestamp",
-    "load_source",
+    "batch_id",
+    "batch_start_time",
+    "batch_end_time",
+    "source",
+    "job_id",
     "target_table",
     "files_processed",
     "files_loaded",
     "files_failed",
-    "load_duration_ms",
-    "validation_status"
+    "files_missing",
+    "files_successful",
+    "total_records_processed",
+    "total_records_loaded",
+    "total_records_failed",
+    "total_records_missing",
+    "batch_duration_ms",
+    "total_file_size_bytes",
+    "error_codes",
+    "error_summary",
+    "validation_status",
+    "created_by"
   ],
   "definitions": {
     "error_code": {

@@ -8,6 +8,7 @@ This package provides utilities for Spark session management, logging, and perfo
 from .session import (
     SparkVersion,
     IcebergConfig,
+    S3FileSystemConfig,
     create_spark_session,
     create_spark_connect_session,
 )
@@ -22,6 +23,7 @@ __all__ = [
     # Session management
     "SparkVersion",
     "IcebergConfig",
+    "S3FileSystemConfig",
     "create_spark_session",
     "create_spark_connect_session",
     # Logging

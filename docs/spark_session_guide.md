@@ -69,14 +69,19 @@ spark = create_spark_session(
 ```
 
 ### With Iceberg Configuration
+Default creates the necessary s3a and iceberg configuration in utils/sessions.py. You can alter the settings by adding different config patterns.
 
 ```python
-from utils import create_spark_session, SparkVersion, IcebergConfig
+from utils import create_spark_session, SparkVersion, IcebergConfig, S3FileSystemConfig
+
+# Create S3 config
+s3_config = S3FileSystemConfig() 
 
 # Create Iceberg config
 iceberg_config = IcebergConfig(
     catalog_uri="http://spark-rest:8181",
-    warehouse="s3://data/wh"
+    warehouse="s3://data/wh",
+    s3_config=s3_config
 )
 
 # Create session with Iceberg

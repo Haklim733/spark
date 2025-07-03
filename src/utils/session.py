@@ -37,9 +37,9 @@ class S3FileSystemConfig:
         self.endpoint = endpoint or default_endpoint
         self.region = region or os.getenv("AWS_REGION", "us-east-1")
 
-        # Use AWS environment variables for consistency with Spark S3A
-        self.access_key = access_key or os.getenv("AWS_ACCESS_KEY_ID", "admin")
-        self.secret_key = secret_key or os.getenv("AWS_SECRET_ACCESS_KEY", "password")
+        # Use MinIO default credentials unless overridden
+        self.access_key = access_key or os.getenv("AWS_ACCESS_KEY_ID")
+        self.secret_key = secret_key or os.getenv("AWS_SECRET_ACCESS_KEY")
 
         self.path_style_access = path_style_access
         self.ssl_enabled = ssl_enabled
@@ -62,6 +62,7 @@ class S3FileSystemConfig:
                 self.path_style_access
             ).lower(),
             "spark.hadoop.fs.s3a.connection.ssl.enabled": str(self.ssl_enabled).lower(),
+            "spark.hadoop.fs.s3a.ssl.enabled": str(self.ssl_enabled).lower(),
             # Enable S3A metrics to suppress warning and collect useful metrics
             "spark.hadoop.fs.s3a.metrics.enabled": "true",
             "spark.hadoop.fs.s3a.metrics.reporting.interval": "60",
@@ -72,7 +73,6 @@ class S3FileSystemConfig:
             "spark.hadoop.fs.s3a.threads.max": "20",
             "spark.hadoop.fs.s3a.threads.core": "10",
             "spark.hadoop.fs.s3a.buffer.dir": "/tmp",
-            "spark.hadoop.fs.s3a.experimental.input.fadvise": "normal",
         }
 
 
@@ -110,6 +110,7 @@ class IcebergConfig:
             "spark.sql.catalog.iceberg.s3.ssl-enabled": str(
                 self.s3_config.ssl_enabled
             ).lower(),
+            # Always include this for safety
             "spark.sql.catalog.iceberg.s3.connection-timeout": "60000",
             "spark.sql.catalog.iceberg.s3.socket-timeout": "60000",
             "spark.sql.catalog.iceberg.s3.max-connections": "100",
@@ -241,21 +242,6 @@ def create_spark_session(
             )
         except Exception as e:
             print(f"⚠️  Warning: Could not set up event logging: {e}")
-
-    # Add S3 configuration (always needed for MinIO access)
-    if s3_config:
-        merged_configs.update(s3_config.get_spark_configs())
-    elif iceberg_config:
-        # If no s3_config but iceberg_config provided, use its s3_config
-        merged_configs.update(iceberg_config.s3_config.get_spark_configs())
-    else:
-        # Default S3 config for MinIO access
-        default_s3_config = S3FileSystemConfig()
-        merged_configs.update(default_s3_config.get_spark_configs())
-
-    # Add Iceberg configuration only if explicitly provided
-    if iceberg_config:
-        merged_configs.update(iceberg_config.get_spark_configs())
 
     if spark_version in [
         SparkVersion.SPARK_CONNECT_4_0,

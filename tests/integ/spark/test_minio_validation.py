@@ -3,6 +3,8 @@
 Test script to demonstrate MinIO data loading validation
 """
 
+import pytest
+
 from src.utils.session import (
     create_spark_session,
     SparkVersion,
@@ -10,13 +12,14 @@ from src.utils.session import (
     S3FileSystemConfig,
 )
 from src.process_legal import (
-    list_minio_files,
+    list_minio_files_distributed,
     is_minio_path,
     get_minio_path_info,
     basic_load_validation,
 )
 
 
+@pytest.mark.spark_integration
 def test_minio_path_detection():
     """Test MinIO path detection functionality"""
 
@@ -52,6 +55,7 @@ def test_minio_path_detection():
     return True
 
 
+@pytest.mark.spark_integration
 def test_minio_connection():
     """Test MinIO connection and file listing"""
 
@@ -73,7 +77,7 @@ def test_minio_connection():
         minio_path = "s3a://data/docs"
         print(f"\n📋 Testing MinIO file listing: {minio_path}")
 
-        files = list_minio_files(spark, minio_path)
+        files = list_minio_files_distributed(spark, minio_path)
         print(f"✅ Found {len(files)} files in MinIO")
 
         if files:
@@ -88,7 +92,7 @@ def test_minio_connection():
         print(f"\n📋 Testing legal documents listing: {legal_path}")
 
         try:
-            legal_files = list_minio_files(spark, legal_path)
+            legal_files = list_minio_files_distributed(spark, legal_path)
             print(f"✅ Found {len(legal_files)} legal documents")
 
             if legal_files:
@@ -107,6 +111,7 @@ def test_minio_connection():
         spark.stop()
 
 
+@pytest.mark.spark_integration
 def test_basic_insertion():
     """Test basic file insertion functionality"""
 
@@ -129,7 +134,7 @@ def test_basic_insertion():
         print(f"🚀 Testing insertion from {test_path}")
 
         # First, check if we can list files
-        files = list_minio_files(spark, test_path)
+        files = list_minio_files_distributed(spark, test_path)
         if not files:
             print("⚠️  No files found to test insertion")
             return True
@@ -159,6 +164,7 @@ def test_basic_insertion():
         spark.stop()
 
 
+@pytest.mark.spark_integration
 def test_validation_functions():
     """Test validation functions"""
 

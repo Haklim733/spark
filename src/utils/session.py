@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from enum import Enum
 import os
+from pathlib import Path
 import zipfile
 import tempfile
 from typing import Dict, Optional
@@ -149,7 +150,7 @@ class PerformanceConfig:
 
 def create_spark_session(
     spark_version: SparkVersion = SparkVersion.SPARK_CONNECT_3_5,
-    app_name: str = None,
+    app_name: Optional[str] = None,
     iceberg_config: Optional[IcebergConfig] = None,
     performance_config: Optional[PerformanceConfig] = None,
     s3_config: Optional[S3FileSystemConfig] = None,
@@ -171,21 +172,7 @@ def create_spark_session(
     """
     # Auto-detect app name from __file__ if not provided
     if app_name is None:
-        import inspect
-
-        try:
-            # Get the calling frame
-            frame = inspect.currentframe()
-            while frame:
-                frame = frame.f_back
-                if frame and frame.f_globals.get("__file__"):
-                    # Extract filename without extension
-                    app_name = os.path.splitext(
-                        os.path.basename(frame.f_globals["__file__"])
-                    )[0]
-                    break
-        except Exception:
-            app_name = "SparkApp"
+        app_name = Path(__file__).stem or "SparkApp"
 
     # Use provided performance config or create a default one
     if not performance_config:

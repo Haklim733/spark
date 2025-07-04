@@ -114,40 +114,27 @@ spark = create_spark_session(
 
 ### `create_iceberg_spark_session`
 
-Creates a session with default Iceberg configuration:
+Creates a session (default includes Iceberg config):
 
 ```python
 from utils import create_iceberg_spark_session, SparkVersion
 
 # PySpark with Iceberg
-spark = create_iceberg_spark_session(
+spark = create_spark_session(
     spark_version=SparkVersion.SPARK_3_5,
     app_name="IcebergApp"
 )
 
-# Spark Connect with Iceberg
-spark = create_iceberg_spark_session(
-    spark_version=SparkVersion.SPARK_CONNECT_4_0,
+# Spark Connect with Iceberg 
+# 4.0 is not supported yet
+spark = create_spark_session(
+    spark_version=SparkVersion.SPARK_CONNECT_3_5,
     app_name="IcebergConnectApp"
 )
 
-# Spark Connect 3.5 with Iceberg
-spark = create_iceberg_spark_session(
-    spark_version=SparkVersion.SPARK_CONNECT_3_5,
-    app_name="IcebergConnect35App"
-)
 ```
-
-## Configuration Examples
-
-### Basic PySpark Session
-
-```python
-spark = create_spark_session(
-    spark_version=SparkVersion.SPARK_3_5,
-    app_name="BasicApp"
-)
-```
+## configuration
+Configuration of catalog and related settings can be found in src/utils/session.py
 
 ### Spark Connect with Custom Config
 
@@ -155,22 +142,12 @@ spark = create_spark_session(
 spark = create_spark_session(
     spark_version=SparkVersion.SPARK_CONNECT_4_0,
     app_name="ConnectApp",
-    spark_executor_memory="4g",
+    path_style_access=False,
     spark_driver_memory="2g"
 )
 ```
 
 ### Spark Connect 3.5 with Custom Config
-
-```python
-spark = create_spark_session(
-    spark_version=SparkVersion.SPARK_CONNECT_3_5,
-    app_name="Connect35App",
-    spark_executor_memory="4g",
-    spark_driver_memory="2g"
-)
-```
-
 ### PySpark with Iceberg and Performance Tuning
 
 ```python

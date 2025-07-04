@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """
+DEPRECATED: use of spark-connect is preferred.
 Simple job submission script - run with: python scripts/submit.py <file_path> --args "arg1 arg2"
 
 This version zips the entire src directory and uses --py-files to distribute all custom code to Spark workers.

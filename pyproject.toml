@@ -15,16 +15,20 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
+# Test discovery configuration
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+
+# Default test options (excludes spark_integration tests by default)
 addopts = [
     "-v",
     "--tb=short",
     "--strict-markers",
     "--disable-warnings",
-    "--color=yes"
+    "--color=yes",
+    "-m", "not spark_integration"  # Exclude spark integration tests by default
 ]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
@@ -32,5 +36,23 @@ markers = [
     "unit: marks tests as unit tests",
     "spark_connect: marks tests that require Spark Connect",
     "pyspark: marks tests that use PySpark",
-    "iceberg: marks tests that require Iceberg"
+    "iceberg: marks tests that require Iceberg",
+    "spark_integration: marks tests in tests/integ/spark (excluded by default, include with '-m spark_integration')"
 ]
+
+# Spark Integration Test Configuration
+# ===================================
+# By default, spark_integration tests are excluded to speed up regular test runs.
+# To include spark integration tests, use one of these commands:
+#
+# Run all tests including spark integration:
+#   pytest -m "spark_integration"
+#
+# Run only spark integration tests:
+#   pytest tests/integ/spark/ -v
+#
+# Run all tests without any exclusions:
+#   pytest -m "not slow"  # This includes spark tests since they're not marked as slow
+#
+# Exclude spark tests explicitly:
+#   pytest -m "not spark_integration"

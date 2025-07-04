@@ -30,6 +30,7 @@ def debug_catalog(spark):
 import pytest
 
 
+@pytest.mark.spark_integration
 @pytest.mark.parametrize("namespace", ["nyc", "legal", "nyc_taxi_data"])
 def test_namespace_access(namespace):
     """Test access to specific namespace"""
@@ -68,6 +69,7 @@ def test_namespace_access(namespace):
         spark.stop()
 
 
+@pytest.mark.spark_integration
 def test_main():
     print("=== CATALOG DEBUG SCRIPT ===")
 

@@ -36,6 +36,7 @@ def iceberg_config():
     )
 
 
+@pytest.mark.spark_integration
 class TestBasicSessionCreation:
     """Test basic Spark session creation"""
 
@@ -100,6 +101,7 @@ class TestBasicSessionCreation:
         spark.stop()
 
 
+@pytest.mark.spark_integration
 class TestDataFrameOperations:
     """Test DataFrame operations with different session types"""
 
@@ -124,6 +126,7 @@ class TestDataFrameOperations:
         assert result[0]["value"] == 100
 
 
+@pytest.mark.spark_integration
 class TestConfigurationManagement:
     """Test configuration management and application"""
 
@@ -249,6 +252,7 @@ class TestConfigurationManagement:
         assert spark_session_pyspark.conf.get("spark.eventLog.enabled") == "true"
 
 
+@pytest.mark.spark_integration
 class TestErrorHandling:
     """Test error handling and edge cases"""
 
@@ -270,6 +274,7 @@ class TestErrorHandling:
         spark.stop()
 
 
+@pytest.mark.spark_integration
 def test_session_creation_performance():
     """Test that session creation is reasonably fast"""
     import time

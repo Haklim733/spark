@@ -91,7 +91,7 @@ services:
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
     ports:
       - "15002:15002"
-    command: spark-submit --class org.apache.spark.sql.connect.service.SparkConnectServer --master spark://spark-master:7077 --jars /opt/bitnami/spark/jars/spark-connect-client_2.12-3.5.6.jar --conf spark.connect.grpc.binding.port=15002 --conf spark.connect.grpc.binding.host=0.0.0.0 --conf spark.connect.grpc.arrow.enabled=true /opt/bitnami/spark/jars/spark-connect_2.12-3.5.6.jar
+    command: spark-submit --class org.apache.spark.sql.connect.service.SparkConnectServer
   spark-worker:
     build: 
       context: .

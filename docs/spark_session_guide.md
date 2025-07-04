@@ -365,6 +365,80 @@ The test suite is organized into classes that test specific categories of operat
 - The Spark Connect architecture means Python code runs locally while Spark operations run remotely
 - For the latest list of supported and unsupported features, see the [official Spark Connect documentation](https://spark.apache.org/docs/latest/connect/index.html#limitations)
 
+## Spark Connect Requirements: JARs vs Python Files
+
+### JAR Requirements for Spark Connect
+
+**Spark Connect requires JARs to be available in the Spark Connect container** for operations that need Java classes (like Iceberg catalog operations).
+
+#### Required JARs for Iceberg
+- **`iceberg-spark-runtime-3.5_2.12-1.9.1.jar`** - Core Iceberg Spark integration
+- **`spark-avro_2.12-3.5.6.jar`** - Avro format support for Iceberg  
+- **`iceberg-aws-bundle-1.9.1.jar`** - AWS S3 integration for Iceberg
+- **`postgresql-42.7.3.jar`** - PostgreSQL JDBC driver for Iceberg catalog
+
+#### Where JARs Must Be Installed
+- **Spark Connect container**: JARs must be in `/opt/bitnami/spark/jars/`
+- **Spark Workers**: JARs must be available for task execution
+- **Spark Master**: No JARs needed (only coordinates, doesn't execute tasks)
+- **Client side**: No JARs needed (client only sends requests)
+
+#### Common JAR-Related Error
+```
+Cannot find catalog plugin class for catalog 'iceberg': org.apache.iceberg.spark.SparkCatalog
+```
+This error occurs when Iceberg JARs are missing from the Spark Connect container.
+
+### Python Files in Spark Connect
+
+**Spark Connect does NOT require Python files to be built into the container** for most operations.
+
+#### When Python Files Are NOT Required
+- Standard PySpark operations
+- Built-in Spark functions  
+- Standard Python libraries (pandas, numpy, etc.)
+- Direct SQL operations
+- UDFs using standard libraries
+
+#### When Python Files ARE Required
+- Importing custom modules from your `src/` directory
+- Using custom Python utilities in UDFs or operations
+
+#### Two Approaches for Custom Python Files
+
+**1. Dynamic Artifacts (Recommended)**
+```python
+from src.utils.session import create_spark_connect_session
+spark = create_spark_connect_session("MyApp", add_artifacts=True)
+```
+This automatically uploads your `src/` directory to Spark Connect at runtime.
+
+**2. Built into Container**
+Copy `src/` directory to the Spark Connect container during build (less flexible).
+
+#### Python Library Requirements
+
+**Client Side (Your Local Machine)**
+- Libraries you import: `import pandas as pd`
+- Libraries for function definitions
+- Your custom Python modules
+
+**Server Side (Spark Connect Container)**  
+- Libraries used in UDFs: `@udf def my_function(x): return pd.Series([x]).mean()`
+- Libraries for operations that execute on the Spark cluster
+- Standard libraries (pandas, numpy, pyspark) are already installed
+
+### Summary
+
+| Component | JARs Required | Python Files Required |
+|-----------|---------------|----------------------|
+| **Spark Connect Container** | ✅ Yes (for Iceberg, etc.) | ❌ No (use artifacts) |
+| **Spark Workers** | ✅ Yes (for task execution) | ❌ No |
+| **Spark Master** | ❌ No (only coordinates) | ❌ No |
+| **Client Side** | ❌ No | ✅ Yes (for imports) |
+
+**Key Takeaway**: Spark Connect needs JARs for Java-based operations but can handle Python files dynamically through artifacts.
+
 ## Common Issues and Quirks
 
 ### Environment Variables vs Configuration Files

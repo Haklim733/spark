@@ -18,7 +18,7 @@ class SparkVersion(Enum):
 
 
 class S3FileSystemConfig:
-    """Configuration class for S3 Filesystem settings"""
+    """Configuration class for S3 Filesystem settings (security/credential overrides only)"""
 
     def __init__(
         self,
@@ -29,51 +29,28 @@ class S3FileSystemConfig:
         path_style_access: bool = True,
         ssl_enabled: bool = False,
     ):
-        # Get endpoint from env or default, strip protocol if present
-        default_endpoint = os.getenv("S3_ENDPOINT", "localhost:9000")
-        if default_endpoint.startswith(("http://", "https://")):
-            default_endpoint = default_endpoint.split("://", 1)[1]
-
-        self.endpoint = endpoint or default_endpoint
+        # Security settings (per-app overrides)
+        self.endpoint = endpoint or os.getenv("S3_ENDPOINT", "localhost:9000")
         self.region = region or os.getenv("AWS_REGION", "us-east-1")
-
-        # Use MinIO default credentials unless overridden
         self.access_key = access_key or os.getenv("AWS_ACCESS_KEY_ID")
         self.secret_key = secret_key or os.getenv("AWS_SECRET_ACCESS_KEY")
-
         self.path_style_access = path_style_access
         self.ssl_enabled = ssl_enabled
 
     def get_spark_configs(self) -> Dict[str, str]:
-        """Get Spark configuration dictionary for S3 Filesystem"""
-        # Spark S3A requires protocol in endpoint, so add http:// if not present
-        endpoint = self.endpoint
-        if not endpoint.startswith(("http://", "https://")):
-            endpoint = f"http://{endpoint}"
-
-        return {
-            "spark.hadoop.fs.s3.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
-            "spark.hadoop.fs.s3a.aws.credentials.provider": "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+        """Get Spark configuration dictionary for S3 Filesystem (security/credential overrides only)"""
+        configs = {
             "spark.hadoop.fs.s3a.access.key": self.access_key,
             "spark.hadoop.fs.s3a.secret.key": self.secret_key,
-            "spark.hadoop.fs.s3a.endpoint": endpoint,
             "spark.hadoop.fs.s3a.region": self.region,
+            "spark.hadoop.fs.s3a.endpoint": f"http://{self.endpoint}",
             "spark.hadoop.fs.s3a.path.style.access": str(
                 self.path_style_access
             ).lower(),
             "spark.hadoop.fs.s3a.connection.ssl.enabled": str(self.ssl_enabled).lower(),
             "spark.hadoop.fs.s3a.ssl.enabled": str(self.ssl_enabled).lower(),
-            # Enable S3A metrics to suppress warning and collect useful metrics
-            "spark.hadoop.fs.s3a.metrics.enabled": "true",
-            "spark.hadoop.fs.s3a.metrics.reporting.interval": "60",
-            # Additional S3A configurations for better compatibility
-            "spark.hadoop.fs.s3a.connection.timeout": "60000",
-            "spark.hadoop.fs.s3a.socket.timeout": "60000",
-            "spark.hadoop.fs.s3a.max.connections": "100",
-            "spark.hadoop.fs.s3a.threads.max": "20",
-            "spark.hadoop.fs.s3a.threads.core": "10",
-            "spark.hadoop.fs.s3a.buffer.dir": "/tmp",
         }
+        return configs
 
 
 class IcebergConfig:
@@ -84,41 +61,38 @@ class IcebergConfig:
         s3_config: S3FileSystemConfig,
         catalog_uri: str = "http://iceberg-rest:8181",
         warehouse: str = "s3://iceberg/wh",
+        catalog_type: str = "rest",
+        catalog: str = "iceberg",
     ):
         self.s3_config = s3_config
         self.catalog_uri = catalog_uri
         self.warehouse = warehouse
+        self.catalog_type = catalog_type
+        self.catalog = catalog
 
     def get_spark_configs(self) -> Dict[str, str]:
-        """Get Spark configuration dictionary for Iceberg"""
+        """Get Spark configuration dictionary for Iceberg (application-specific only)"""
         configs = {
-            # Note: spark.sql.extensions is a static config and should be set in spark-defaults.conf
-            # "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
-            "spark.sql.catalog.iceberg": "org.apache.iceberg.spark.SparkCatalog",
-            "spark.sql.defaultCatalog": "iceberg",
-            "spark.sql.catalog.iceberg.type": "rest",
-            "spark.sql.catalog.iceberg.uri": self.catalog_uri,
-            "spark.sql.catalog.iceberg.io-impl": "org.apache.iceberg.aws.s3.S3FileIO",
-            "spark.sql.catalog.iceberg.warehouse": self.warehouse,
+            # Application-specific Iceberg settings (server-side configs are in spark-defaults.conf)
+            # Only set credentials and endpoint - let server-side handle catalog type and other settings
             "spark.sql.catalog.iceberg.s3.endpoint": f"http://{self.s3_config.endpoint}",
-            "spark.sql.catalog.iceberg.s3.access-key": self.s3_config.access_key,
-            "spark.sql.catalog.iceberg.s3.secret-key": self.s3_config.secret_key,
-            "spark.sql.catalog.iceberg.s3.region": self.s3_config.region,
+            "spark.sql.catalog.iceberg.s3.access-key": self.s3_config.access_key
+            or "admin",
+            "spark.sql.catalog.iceberg.s3.secret-key": self.s3_config.secret_key
+            or "password",
+            "spark.sql.catalog.iceberg.s3.region": self.s3_config.region or "us-east-1",
+            "spark.sql.defaultCatalog": self.catalog,
+            "spark.sql.catalog.iceberg.type": self.catalog_type,
+            "spark.sql.catalog.iceberg.uri": self.catalog_uri,
+            "spark.sql.catalog.iceberg.warehouse": self.warehouse,
             "spark.sql.catalog.iceberg.s3.path-style-access": str(
                 self.s3_config.path_style_access
             ).lower(),
             "spark.sql.catalog.iceberg.s3.ssl-enabled": str(
                 self.s3_config.ssl_enabled
             ).lower(),
-            # Always include this for safety
-            "spark.sql.catalog.iceberg.s3.connection-timeout": "60000",
-            "spark.sql.catalog.iceberg.s3.socket-timeout": "60000",
-            "spark.sql.catalog.iceberg.s3.max-connections": "100",
-            "spark.sql.execution.metrics.enabled": "true",
-            "spark.sql.execution.metrics.persist": "true",
         }
-        # S3 configuration for data storage
-        configs.update(self.s3_config.get_spark_configs())
+
         return configs
 
 
@@ -175,7 +149,7 @@ class PerformanceConfig:
 
 def create_spark_session(
     spark_version: SparkVersion = SparkVersion.SPARK_CONNECT_3_5,
-    app_name: str = "SparkApp",
+    app_name: str = None,
     iceberg_config: Optional[IcebergConfig] = None,
     performance_config: Optional[PerformanceConfig] = None,
     s3_config: Optional[S3FileSystemConfig] = None,
@@ -195,6 +169,24 @@ def create_spark_session(
     Returns:
         SparkSession: Configured Spark session
     """
+    # Auto-detect app name from __file__ if not provided
+    if app_name is None:
+        import inspect
+
+        try:
+            # Get the calling frame
+            frame = inspect.currentframe()
+            while frame:
+                frame = frame.f_back
+                if frame and frame.f_globals.get("__file__"):
+                    # Extract filename without extension
+                    app_name = os.path.splitext(
+                        os.path.basename(frame.f_globals["__file__"])
+                    )[0]
+                    break
+        except Exception:
+            app_name = "SparkApp"
+
     # Use provided performance config or create a default one
     if not performance_config:
         performance_config = PerformanceConfig()
@@ -205,43 +197,82 @@ def create_spark_session(
             s3_config = S3FileSystemConfig()
         iceberg_config = IcebergConfig(s3_config)
 
-    # Start with performance configs
+    # Start with performance configs (application-specific)
     merged_configs = {
         **performance_config.get_spark_configs(),
         **additional_configs,
     }
 
-    # Only set up event logging if we're in a Docker environment or if the path exists
-    log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
-    if os.path.exists("/opt/bitnami/spark") or os.getenv("SPARK_HOME", "").startswith(
-        "/opt/bitnami"
-    ):
-        # We're in Docker environment
-        try:
-            os.makedirs(log_dir, exist_ok=True)
-            merged_configs.update(
-                {
-                    "spark.eventLog.enabled": "true",
-                    "spark.eventLog.dir": f"file:///opt/bitnami/spark/logs/app/{app_name}",
-                }
-            )
-        except PermissionError:
-            print(
-                f"⚠️  Warning: Could not create log directory {log_dir}. Event logging disabled."
-            )
+    # Add S3A filesystem configs if s3_config is provided
+    if s3_config:
+        merged_configs.update(s3_config.get_spark_configs())
+
+    # Add Iceberg configs (these will be merged with S3A configs)
+    if iceberg_config:
+        merged_configs.update(iceberg_config.get_spark_configs())
+
+    # Add application-specific configurations (not in spark-defaults.conf)
+    app_specific_configs = {
+        # Application-specific settings that can be overridden per app
+        # (server-side defaults are in spark-defaults.conf)
+    }
+
+    # Merge all configurations (additional_configs takes precedence)
+    merged_configs = {**app_specific_configs, **merged_configs}
+
+    # Set up event logging (only for regular Spark, not Spark Connect)
+    if spark_version not in [
+        SparkVersion.SPARK_CONNECT_4_0,
+        SparkVersion.SPARK_CONNECT_3_5,
+    ]:
+        log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
+        if os.path.exists("/opt/bitnami/spark") or os.getenv(
+            "SPARK_HOME", ""
+        ).startswith("/opt/bitnami"):
+            # We're in Docker environment
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                merged_configs.update(
+                    {
+                        "spark.eventLog.enabled": "true",
+                        "spark.eventLog.dir": f"file:///opt/bitnami/spark/logs/app/{app_name}",
+                    }
+                )
+            except PermissionError:
+                print(
+                    f"⚠️  Warning: Could not create log directory {log_dir}. Event logging disabled."
+                )
+        else:
+            # We're running locally, use a local log directory
+            local_log_dir = f"./spark-logs/app/{app_name}"
+            try:
+                os.makedirs(local_log_dir, exist_ok=True)
+                merged_configs.update(
+                    {
+                        "spark.eventLog.enabled": "true",
+                        "spark.eventLog.dir": f"file://{os.path.abspath(local_log_dir)}",
+                    }
+                )
+            except Exception as e:
+                print(f"⚠️  Warning: Could not set up event logging: {e}")
     else:
-        # We're running locally, use a local log directory
-        local_log_dir = f"./spark-logs/app/{app_name}"
-        try:
-            os.makedirs(local_log_dir, exist_ok=True)
-            merged_configs.update(
-                {
-                    "spark.eventLog.enabled": "true",
-                    "spark.eventLog.dir": f"file://{os.path.abspath(local_log_dir)}",
-                }
-            )
-        except Exception as e:
-            print(f"⚠️  Warning: Could not set up event logging: {e}")
+        # For Spark Connect, only create directory structure (no event logging config)
+        log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
+        if os.path.exists("/opt/bitnami/spark") or os.getenv(
+            "SPARK_HOME", ""
+        ).startswith("/opt/bitnami"):
+            # We're in Docker environment
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+            except PermissionError:
+                print(f"⚠️  Warning: Could not create log directory {log_dir}.")
+        else:
+            # We're running locally, use a local log directory
+            local_log_dir = f"./spark-logs/app/{app_name}"
+            try:
+                os.makedirs(local_log_dir, exist_ok=True)
+            except Exception as e:
+                print(f"⚠️  Warning: Could not create log directory: {e}")
 
     if spark_version in [
         SparkVersion.SPARK_CONNECT_4_0,
@@ -249,7 +280,10 @@ def create_spark_session(
     ]:
         # For Spark Connect, use the consolidated session function
         return create_spark_connect_session(
-            app_name=app_name, iceberg_config=iceberg_config, **additional_configs
+            app_name=app_name,
+            iceberg_config=iceberg_config,
+            s3_config=s3_config,
+            **merged_configs,
         )
     elif spark_version in [SparkVersion.SPARK_3_5, SparkVersion.SPARK_4_0]:
         return _create_pyspark_session(app_name=app_name, spark_params=merged_configs)
@@ -282,8 +316,9 @@ def _create_src_archive() -> str:
 
 
 def create_spark_connect_session(
-    app_name: str = "SparkConnectApp",
+    app_name: str = None,
     iceberg_config: Optional[IcebergConfig] = None,
+    s3_config: Optional[S3FileSystemConfig] = None,
     add_artifacts: bool = False,
     **additional_configs,
 ) -> SparkSession:
@@ -293,14 +328,37 @@ def create_spark_connect_session(
     Args:
         app_name: Name of the Spark application
         iceberg_config: Optional IcebergConfig for Iceberg integration
+        s3_config: Optional S3FileSystemConfig for S3/MinIO access
         add_artifacts: Whether to add src directory as artifacts
         **additional_configs: Additional Spark configurations
 
     Returns:
         SparkSession: Configured Spark Connect session
     """
+    # Auto-detect app name from __file__ if not provided
+    if app_name is None:
+        import inspect
+
+        try:
+            # Get the calling frame
+            frame = inspect.currentframe()
+            while frame:
+                frame = frame.f_back
+                if frame and frame.f_globals.get("__file__"):
+                    # Extract filename without extension
+                    app_name = os.path.splitext(
+                        os.path.basename(frame.f_globals["__file__"])
+                    )[0]
+                    break
+        except Exception:
+            app_name = "SparkConnectApp"
+
     # Start with additional configs
     spark_params = {**additional_configs}
+
+    # Add S3A filesystem configuration if provided
+    if s3_config:
+        spark_params.update(s3_config.get_spark_configs())
 
     # Add Iceberg configuration if provided
     if iceberg_config:
@@ -309,6 +367,26 @@ def create_spark_connect_session(
     # Add artifacts flag if requested
     if add_artifacts:
         spark_params["spark.connect.add.artifacts"] = "true"
+
+    # Note: Spark Connect doesn't support event logging configuration
+    # Event logs are handled by the Spark Connect server itself
+    # We only create the directory structure for consistency
+    log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
+    if os.path.exists("/opt/bitnami/spark") or os.getenv("SPARK_HOME", "").startswith(
+        "/opt/bitnami"
+    ):
+        # We're in Docker environment
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except PermissionError:
+            print(f"⚠️  Warning: Could not create log directory {log_dir}.")
+    else:
+        # We're running locally, use a local log directory
+        local_log_dir = f"./spark-logs/app/{app_name}"
+        try:
+            os.makedirs(local_log_dir, exist_ok=True)
+        except Exception as e:
+            print(f"⚠️  Warning: Could not create log directory: {e}")
 
     return _create_spark_connect_session(app_name, spark_params)
 

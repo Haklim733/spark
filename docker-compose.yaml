@@ -52,7 +52,7 @@ services:
     volumes:
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
-      - ./conf/log4j.properties:/opt/bitnami/spark/conf/log4j.properties
+      - ./log4j.properties:/opt/bitnami/spark/conf/log4j.properties
     ports:
       - "18080:18080"
     environment:
@@ -138,7 +138,7 @@ services:
     volumes:
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
-      - ./conf/log4j.properties:/opt/bitnami/spark/conf/log4j.properties
+      - ./log4j.properties:/opt/bitnami/spark/conf/log4j.properties
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     scale: 2  # This creates 2 worker instances
   postgres:

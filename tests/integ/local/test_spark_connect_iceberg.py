@@ -19,49 +19,16 @@ from pyspark.errors.exceptions.base import PySparkNotImplementedError
 from src.utils import create_spark_connect_session, IcebergConfig, S3FileSystemConfig
 
 
-# @pytest.fixture(scope="class")
-# def spark_connect_iceberg_session():
-#     """Create Spark Connect session with minimal Iceberg configuration"""
-
-#     spark = (
-#         SparkSession.builder.appName("SparkConnectIcebergTest")
-#         .remote("sc://localhost:15002")
-#         # Minimal S3A Configuration
-#         .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000")
-#         .config("spark.hadoop.fs.s3a.access.key", "admin")
-#         .config("spark.hadoop.fs.s3a.secret.key", "password")
-#         .config("spark.hadoop.fs.s3a.force.path.style", "true")
-#         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-#         # Minimal Iceberg Configuration
-#         .config(
-#             "spark.sql.extensions",
-#             "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
-#         )
-#         .config("spark.sql.catalog.iceberg", "org.apache.iceberg.spark.SparkCatalog")
-#         .config("spark.sql.catalog.iceberg.type", "rest")
-#         .config("spark.sql.catalog.iceberg.uri", "http://localhost:8181")
-#         .config("spark.sql.catalog.iceberg.warehouse", "s3://iceberg/")
-#         .config("spark.sql.catalog.iceberg.s3.endpoint", "http://localhost:9000")
-#         .config("spark.sql.catalog.iceberg.s3.access-key", "admin")
-#         .config("spark.sql.catalog.iceberg.s3.secret-key", "password")
-#         .getOrCreate()
-#     )
-#     yield spark
-#     spark.stop()
-
-
 @pytest.fixture(scope="class")
 def spark_connect_iceberg_session():
     """Create Spark Connect session with Iceberg configuration"""
 
     # Create S3 configuration
     s3_config = S3FileSystemConfig(
-        endpoint="minio:9000",  # Use minio hostname, not localhost
+        endpoint="minio:9000",
         region="us-east-1",
         access_key="admin",
         secret_key="password",
-        path_style_access=True,
-        ssl_enabled=False,
     )
 
     # Create Iceberg configuration
@@ -135,7 +102,7 @@ class TestSparkConnectIceberg:
         print(f"✅ Dropped namespace: {namespace_name}")
 
     def test_iceberg_table_creation(self, spark_connect_iceberg_session):
-        """Test creating table (without USING iceberg)"""
+        """Test creating Iceberg table with explicit USING iceberg"""
         namespace_name = "test_table_namespace"
         table_name = "test_table"
         full_table_name = f"{namespace_name}.{table_name}"
@@ -145,28 +112,28 @@ class TestSparkConnectIceberg:
             f"CREATE NAMESPACE IF NOT EXISTS {namespace_name}"
         )
 
-        # Create a simple table (without USING iceberg)
+        # Create an Iceberg table with explicit USING iceberg
         create_table_sql = f"""
         CREATE TABLE IF NOT EXISTS {full_table_name} (
             id INT,
             name STRING,
             value DOUBLE
-        )
+        ) USING iceberg
         """
 
         spark_connect_iceberg_session.sql(create_table_sql)
-        print(f"✅ Created table: {full_table_name}")
+        print(f"✅ Created Iceberg table: {full_table_name}")
 
         # Test basic operations
         spark_connect_iceberg_session.sql(
             f"INSERT INTO {full_table_name} VALUES (1, 'test', 1.0)"
         )
-        print(f"✅ Inserted data into table: {full_table_name}")
+        print(f"✅ Inserted data into Iceberg table: {full_table_name}")
 
         # Clean up
         spark_connect_iceberg_session.sql(f"DROP TABLE IF EXISTS {full_table_name}")
         spark_connect_iceberg_session.sql(f"DROP NAMESPACE IF EXISTS {namespace_name}")
-        print(f"✅ Cleaned up table and namespace")
+        print(f"✅ Cleaned up Iceberg table and namespace")
 
     def test_iceberg_catalog_metadata(self, spark_connect_iceberg_session):
         """Test accessing Iceberg catalog metadata"""

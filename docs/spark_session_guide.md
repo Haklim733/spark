@@ -227,30 +227,40 @@ When working with S3/MinIO storage, it's important to understand the difference 
 
 Used for direct S3/MinIO filesystem operations like `spark.read.text("s3a://bucket/file.txt")`:
 
-```conf
-# S3A Filesystem configuration for direct S3/MinIO access
-spark.hadoop.fs.s3.impl org.apache.hadoop.fs.s3a.S3AFileSystem
-spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
-spark.hadoop.fs.s3a.access.key admin
-spark.hadoop.fs.s3a.secret.key password
-spark.hadoop.fs.s3a.endpoint http://minio:9000
-spark.hadoop.fs.s3a.region us-east-1
-spark.hadoop.fs.s3a.path.style.access true
-spark.hadoop.fs.s3a.connection.ssl.enabled false
+**Server-side configuration (spark-defaults.conf)**:
+See the current `spark-defaults.conf` file for S3A filesystem registration and other server-side settings.
+
+**Application-side configuration (session.py)**:
+```python
+from src.utils import S3FileSystemConfig
+
+s3_config = S3FileSystemConfig(
+    endpoint="minio:9000",
+    access_key="admin",
+    secret_key="password",
+    region="us-east-1"
+)
 ```
 
 ### Iceberg Catalog Configuration (for Iceberg operations)
 
 Used for Iceberg catalog operations like table creation and metadata management:
 
-```conf
-# Iceberg catalog configuration
-spark.sql.catalog.iceberg.s3.access-key-id admin
-spark.sql.catalog.iceberg.s3.secret-access-key password
-spark.sql.catalog.iceberg.s3.endpoint http://minio:9000
-spark.sql.catalog.iceberg.s3.region us-east-1
-spark.sql.catalog.iceberg.s3.path-style-access true
-spark.sql.catalog.iceberg.s3.ssl-enabled false
+**Server-side configuration (spark-defaults.conf)**:
+See the current `spark-defaults.conf` file for Iceberg catalog registration and other server-side settings.
+
+**Application-side configuration (session.py)**:
+```python
+from src.utils import IcebergConfig, S3FileSystemConfig
+
+s3_config = S3FileSystemConfig(
+    endpoint="minio:9000",
+    access_key="admin",
+    secret_key="password",
+    region="us-east-1"
+)
+
+iceberg_config = IcebergConfig(s3_config)
 ```
 
 ### Key Differences
@@ -270,37 +280,45 @@ If you encounter 403 Forbidden errors when trying to read files directly from S3
 
 1. **Both configurations are present**: S3A filesystem config for direct file access, Iceberg catalog config for table operations
 2. **Credentials match**: Both configurations should use the same access credentials
-3. **Spark Connect server has S3A config**: The Spark Connect server needs S3A configuration in `spark-defaults.conf`
+3. **Server-side registration is present**: The Spark Connect server needs S3A registration in `spark-defaults.conf`
+4. **Application-side credentials are set**: Use `S3FileSystemConfig` in your session configuration
 
 ### Example: Complete Configuration
 
 For a setup that supports both direct S3 operations and Iceberg catalog operations:
 
-```conf
-# Iceberg catalog configuration
-spark.sql.catalog.iceberg org.apache.iceberg.spark.SparkCatalog
-spark.sql.catalog.iceberg.type rest
-spark.sql.catalog.iceberg.uri http://iceberg-rest:8181
-spark.sql.catalog.iceberg.io-impl org.apache.iceberg.aws.s3.S3FileIO
-spark.sql.catalog.iceberg.warehouse s3://data/wh/
-spark.sql.catalog.iceberg.s3.access-key-id admin
-spark.sql.catalog.iceberg.s3.secret-access-key password
-spark.sql.catalog.iceberg.s3.endpoint http://minio:9000
-spark.sql.catalog.iceberg.s3.region us-east-1
-spark.sql.catalog.iceberg.s3.path-style-access true
-spark.sql.catalog.iceberg.s3.ssl-enabled false
-spark.sql.defaultCatalog iceberg
+**Server-side (spark-defaults.conf)**:
+See the current `spark-defaults.conf` file for complete server-side configuration including:
+- Core Iceberg catalog registration
+- Core S3A filesystem registration
+- Spark Connect settings
+- Performance and resource configurations
 
-# S3A Filesystem configuration for direct S3/MinIO access
-spark.hadoop.fs.s3.impl org.apache.hadoop.fs.s3a.S3AFileSystem
-spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
-spark.hadoop.fs.s3a.access.key admin
-spark.hadoop.fs.s3a.secret.key password
-spark.hadoop.fs.s3a.endpoint http://minio:9000
-spark.hadoop.fs.s3a.region us-east-1
-spark.hadoop.fs.s3a.path.style.access true
-spark.hadoop.fs.s3a.connection.ssl.enabled false
+**Application-side (session.py)**:
+```python
+from src.utils import S3FileSystemConfig, IcebergConfig, create_spark_session, SparkVersion
+
+# S3 configuration for direct file operations
+s3_config = S3FileSystemConfig(
+    endpoint="minio:9000",
+    access_key="admin",
+    secret_key="password",
+    region="us-east-1"
+)
+
+# Iceberg configuration for catalog operations
+iceberg_config = IcebergConfig(s3_config)
+
+# Create session with both configurations
+spark = create_spark_session(
+    spark_version=SparkVersion.SPARK_CONNECT_3_5,
+    app_name="MyApp",
+    s3_config=s3_config,
+    iceberg_config=iceberg_config
+)
 ```
+
+**⚠️ UPDATE**: The new flexible configuration system allows you to set client-side parameters like credentials, endpoints, SSL settings, and catalog configurations per application in `session.py`, providing better multi-user support and application-specific customization.
 
 ## Limitations: Unsupported and Supported Functions in Spark Connect
 
@@ -490,6 +508,8 @@ spark.hadoop.fs.s3a.path.style.access true
 spark.hadoop.fs.s3a.connection.ssl.enabled false
 ```
 
+**⚠️ UPDATE**: With the new flexible configuration system, client-side parameters like S3A and Iceberg catalog configurations (credentials, endpoints, SSL settings) can now be set in `session.py` for per-application customization. The server-side `spark-defaults.conf` still needs the core catalog registration and extensions, but client-side parameters can be overridden per session.
+
 ### Issue: Environment Variables vs Configuration Files
 
 **Problem**: Setting environment variables in `docker-compose.yaml` wasn't sufficient for S3A authentication.
@@ -527,7 +547,9 @@ spark.hadoop.fs.s3a.secret.key password
 | **Secret key** | `secret.key` | `secret-access-key` |
 | **Use cases** | `spark.read.text("s3a://bucket/file.txt")` | `spark.sql("CREATE TABLE ...")` |
 
-**Solution**: Configure both for complete functionality:
+**Solution**: Configure both for complete functionality. You can now set these flexibly:
+
+**Option 1: Server-side configuration (spark-defaults.conf)**
 ```conf
 # For direct S3 operations
 spark.hadoop.fs.s3a.access.key admin
@@ -537,6 +559,32 @@ spark.hadoop.fs.s3a.secret.key password
 spark.sql.catalog.iceberg.s3.access-key-id admin
 spark.sql.catalog.iceberg.s3.secret-access-key password
 ```
+
+**Option 2: Application-side configuration (session.py)**
+```python
+from src.utils import S3FileSystemConfig, IcebergConfig, create_spark_session
+
+# S3 configuration for direct file operations
+s3_config = S3FileSystemConfig(
+    endpoint="minio:9000",
+    access_key="admin",
+    secret_key="password",
+    region="us-east-1"
+)
+
+# Iceberg configuration for catalog operations
+iceberg_config = IcebergConfig(s3_config)
+
+# Create session with both configurations
+spark = create_spark_session(
+    spark_version=SparkVersion.SPARK_CONNECT_3_5,
+    app_name="MyApp",
+    s3_config=s3_config,
+    iceberg_config=iceberg_config
+)
+```
+
+**⚠️ UPDATE**: The new flexible configuration system allows you to set S3A and Iceberg catalog configurations per application in `session.py`, providing better multi-user support and application-specific customization.
 
 ### Issue: JAR Requirements for Spark Connect
 
@@ -604,7 +652,7 @@ AWS_ACCESS_KEY_ID=admin
 
 ### Complete Working Example
 
-Here's a complete working configuration:
+Here's a complete working configuration with the new flexible system:
 
 **docker-compose.yaml**:
 ```yaml
@@ -619,45 +667,56 @@ spark-connect:
     - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
 ```
 
-**spark-defaults.conf**:
-```conf
-# Iceberg catalog configuration
-spark.sql.catalog.iceberg org.apache.iceberg.spark.SparkCatalog
-spark.sql.catalog.iceberg.type rest
-spark.sql.catalog.iceberg.uri http://iceberg-rest:8181
-spark.sql.catalog.iceberg.io-impl org.apache.iceberg.aws.s3.S3FileIO
-spark.sql.catalog.iceberg.warehouse s3://data/wh/
-spark.sql.catalog.iceberg.s3.access-key-id admin
-spark.sql.catalog.iceberg.s3.secret-access-key password
-spark.sql.catalog.iceberg.s3.endpoint http://minio:9000
-spark.sql.catalog.iceberg.s3.region us-east-1
-spark.sql.catalog.iceberg.s3.path-style-access true
-spark.sql.catalog.iceberg.s3.ssl-enabled false
-spark.sql.defaultCatalog iceberg
+**spark-defaults.conf** (server-side configuration):
+See the current `spark-defaults.conf` file for the complete server-side configuration including:
+- Core Iceberg catalog registration
+- Core S3A filesystem registration  
+- Spark Connect settings
+- Performance and resource configurations
 
-# S3A Filesystem configuration
-spark.hadoop.fs.s3.impl org.apache.hadoop.fs.s3a.S3AFileSystem
-spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
-spark.hadoop.fs.s3a.access.key admin
-spark.hadoop.fs.s3a.secret.key password
-spark.hadoop.fs.s3a.endpoint http://minio:9000
-spark.hadoop.fs.s3a.region us-east-1
-spark.hadoop.fs.s3a.path.style.access true
-spark.hadoop.fs.s3a.connection.ssl.enabled false
+**Python application (session.py)** (flexible application-side configuration):
+```python
+from src.utils import S3FileSystemConfig, IcebergConfig, create_spark_session, SparkVersion
+
+# S3 configuration for direct file operations
+s3_config = S3FileSystemConfig(
+    endpoint="minio:9000",
+    access_key="admin",
+    secret_key="password",
+    region="us-east-1"
+)
+
+# Iceberg configuration for catalog operations
+iceberg_config = IcebergConfig(s3_config)
+
+# Create session with both configurations
+spark = create_spark_session(
+    spark_version=SparkVersion.SPARK_CONNECT_3_5,
+    app_name="MyApp",
+    s3_config=s3_config,
+    iceberg_config=iceberg_config
+)
 ```
+
+**⚠️ UPDATE**: The new system provides flexibility where:
+- **Server-side** (`spark-defaults.conf`): Core catalog registration, extensions, and infrastructure settings
+- **Application-side** (`session.py`): Client-side parameters like credentials, endpoints, SSL settings, and per-application customization
 
 ### Troubleshooting Checklist
 
 When Spark Connect operations fail:
 
 1. ✅ **Check if Spark Connect is in workers**: Verify `SPARK_CONNECT_ENABLED=true` in worker containers
-2. ✅ **Verify spark-defaults.conf**: Check that critical configs are in the file, not just Python code
-3. ✅ **Check JAR installation**: Ensure Iceberg JARs are in `/opt/bitnami/spark/jars/`
-4. ✅ **Verify endpoint configuration**: Ensure correct hostname for context
-5. ✅ **Check credentials provider**: Must include `SimpleAWSCredentialsProvider`
-6. ✅ **Restart Spark Connect**: `docker-compose restart spark-connect`
-7. ✅ **Recreate containers if needed**: `docker-compose down && docker-compose up -d`
-8. ✅ **Check MinIO user permissions**: Verify user exists and has proper permissions 
+2. ✅ **Verify spark-defaults.conf**: Check that core catalog registration and extensions are in the file
+3. ✅ **Check application-side configs**: Verify S3A and Iceberg credentials/endpoints are set in `session.py`
+4. ✅ **Check JAR installation**: Ensure Iceberg JARs are in `/opt/bitnami/spark/jars/`
+5. ✅ **Verify endpoint configuration**: Ensure correct hostname for context
+6. ✅ **Check credentials provider**: Must include `SimpleAWSCredentialsProvider` in server-side config
+7. ✅ **Restart Spark Connect**: `docker-compose restart spark-connect`
+8. ✅ **Recreate containers if needed**: `docker-compose down && docker-compose up -d`
+9. ✅ **Check MinIO user permissions**: Verify user exists and has proper permissions
+
+**⚠️ UPDATE**: With the new flexible configuration system, troubleshooting now involves checking both server-side (`spark-defaults.conf`) and application-side (`session.py`) configurations, where `session.py` handles client-side parameters like credentials, endpoints, SSL settings, and catalog configurations. 
 
 ### Issue: S3A SSL Configuration
 

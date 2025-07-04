@@ -44,3 +44,5 @@ uv run scripts/setup_jars.sh
 uv run sqlmesh plan dev --gateway spark
 uv run sqlmesh run --gateway spark
 ```
+
+**Note**: Aliases are needed even if S3 style path is configured to be true (TBD)

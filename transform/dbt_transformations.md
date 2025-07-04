@@ -168,7 +168,7 @@ WHERE document_id IS NOT NULL  -- Filter out invalid records
 ### 1. **Extract & Load (insert_tables.py)**
 ```bash
 # Run ELT operations
-python src/insert_tables.py
+uv run -m src.insert_tables
 ```
 
 ### 2. **Transform & Test (dbt/SQLMesh)**

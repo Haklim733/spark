@@ -83,7 +83,7 @@ class IcebergConfig:
         self,
         s3_config: S3FileSystemConfig,
         catalog_uri: str = "http://iceberg-rest:8181",
-        warehouse: str = "s3://data/wh",
+        warehouse: str = "s3://iceberg/wh",
     ):
         self.s3_config = s3_config
         self.catalog_uri = catalog_uri

@@ -4,9 +4,7 @@ Test check_tables.py functionality using Spark Connect
 This tests that Python code can run locally while connecting to remote Spark cluster
 """
 
-import os
 import pytest
-from pyspark.sql import SparkSession
 from src.check_tables import check_namespace_tables
 from src.utils import create_spark_connect_session
 
@@ -27,6 +25,67 @@ class TestCheckTablesSparkConnect:
         print(f"✅ Connected to Spark Connect server!")
         print(f"   Spark version: {spark_connect_session.version}")
         print(f"   Master: {spark_connect_session.conf.get('spark.master', 'N/A')}")
+
+    def test_catalog_diagnosis(self, spark_connect_session):
+        """Test catalog and schema diagnosis"""
+        print("=== TESTING CATALOG DIAGNOSIS ===")
+        try:
+            # Check current catalog
+            current_catalog = spark_connect_session.sql(
+                "SELECT current_catalog()"
+            ).take(1)[0][0]
+            print(f"Current catalog: {current_catalog}")
+
+            # List all catalogs
+            print("\nAvailable catalogs:")
+            catalogs = spark_connect_session.sql("SHOW CATALOGS")
+            catalogs.show(truncate=False)
+
+            # Check current schema
+            current_schema = spark_connect_session.sql("SELECT current_schema()").take(
+                1
+            )[0][0]
+            print(f"Current schema: {current_schema}")
+
+            # Try to list schemas in different catalogs
+            for catalog_row in catalogs.collect():
+                catalog_name = catalog_row.catalog
+                print(f"\nSchemas in catalog '{catalog_name}':")
+                try:
+                    spark_connect_session.sql(f"USE {catalog_name}")
+                    schemas = spark_connect_session.sql("SHOW SCHEMAS")
+                    schemas.show(truncate=False)
+                except Exception as e:
+                    print(f"  Error listing schemas in {catalog_name}: {e}")
+
+            print("✅ Catalog diagnosis completed")
+
+        except Exception as e:
+            print(f"❌ Catalog diagnosis failed: {e}")
+
+    def test_direct_table_access(self, spark_connect_session):
+        """Test different ways to access tables"""
+        print("=== TESTING DIRECT TABLE ACCESS ===")
+
+        # Try different table name formats
+        table_variations = [
+            "legal.documents",
+            "iceberg.legal.documents",
+            "documents",
+        ]
+
+        for table_name in table_variations:
+            print(f"\nTrying: {table_name}")
+            try:
+                result = spark_connect_session.sql(f"SELECT COUNT(*) FROM {table_name}")
+                count = result.take(1)[0][0]
+                print(f"✅ Success with {table_name}: {count} rows")
+                return table_name
+            except Exception as e:
+                print(f"❌ Failed with {table_name}: {e}")
+
+        print("⚠️  No table access method worked")
+        return None
 
     def test_show_databases(self, spark_connect_session):
         """Test showing databases using Spark Connect"""
@@ -131,7 +190,7 @@ def test_standalone_check_tables():
         spark = create_spark_connect_session("StandaloneCheckTablesTest")
 
         # Test basic functionality
-        databases = spark.sql("SHOW DATABLES;")
+        databases = spark.sql("SHOW DATABASES;")
         print("✅ Standalone check_tables test successful")
         spark.stop()
 

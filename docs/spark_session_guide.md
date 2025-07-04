@@ -207,7 +207,7 @@ The system uses these environment variables for default Iceberg configuration:
 Run the examples to test the new system:
 
 ```bash
-python src/examples/session_examples.py
+uv run -m src.examples.session_examples
 ```
 
 ## Benefits
@@ -231,8 +231,8 @@ Used for direct S3/MinIO filesystem operations like `spark.read.text("s3a://buck
 # S3A Filesystem configuration for direct S3/MinIO access
 spark.hadoop.fs.s3.impl org.apache.hadoop.fs.s3a.S3AFileSystem
 spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
-spark.hadoop.fs.s3a.access.key sparkuser
-spark.hadoop.fs.s3a.secret.key sparkpass
+spark.hadoop.fs.s3a.access.key admin
+spark.hadoop.fs.s3a.secret.key password
 spark.hadoop.fs.s3a.endpoint http://minio:9000
 spark.hadoop.fs.s3a.region us-east-1
 spark.hadoop.fs.s3a.path.style.access true
@@ -245,8 +245,8 @@ Used for Iceberg catalog operations like table creation and metadata management:
 
 ```conf
 # Iceberg catalog configuration
-spark.sql.catalog.iceberg.s3.access-key-id sparkuser
-spark.sql.catalog.iceberg.s3.secret-access-key sparkpass
+spark.sql.catalog.iceberg.s3.access-key-id admin
+spark.sql.catalog.iceberg.s3.secret-access-key password
 spark.sql.catalog.iceberg.s3.endpoint http://minio:9000
 spark.sql.catalog.iceberg.s3.region us-east-1
 spark.sql.catalog.iceberg.s3.path-style-access true
@@ -283,8 +283,8 @@ spark.sql.catalog.iceberg.type rest
 spark.sql.catalog.iceberg.uri http://iceberg-rest:8181
 spark.sql.catalog.iceberg.io-impl org.apache.iceberg.aws.s3.S3FileIO
 spark.sql.catalog.iceberg.warehouse s3://data/wh/
-spark.sql.catalog.iceberg.s3.access-key-id sparkuser
-spark.sql.catalog.iceberg.s3.secret-access-key sparkpass
+spark.sql.catalog.iceberg.s3.access-key-id admin
+spark.sql.catalog.iceberg.s3.secret-access-key password
 spark.sql.catalog.iceberg.s3.endpoint http://minio:9000
 spark.sql.catalog.iceberg.s3.region us-east-1
 spark.sql.catalog.iceberg.s3.path-style-access true
@@ -294,8 +294,8 @@ spark.sql.defaultCatalog iceberg
 # S3A Filesystem configuration for direct S3/MinIO access
 spark.hadoop.fs.s3.impl org.apache.hadoop.fs.s3a.S3AFileSystem
 spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
-spark.hadoop.fs.s3a.access.key sparkuser
-spark.hadoop.fs.s3a.secret.key sparkpass
+spark.hadoop.fs.s3a.access.key admin
+spark.hadoop.fs.s3a.secret.key password
 spark.hadoop.fs.s3a.endpoint http://minio:9000
 spark.hadoop.fs.s3a.region us-east-1
 spark.hadoop.fs.s3a.path.style.access true
@@ -303,21 +303,6 @@ spark.hadoop.fs.s3a.connection.ssl.enabled false
 ```
 
 ## Limitations: Unsupported and Supported Functions in Spark Connect
-
-Spark Connect (as of your current environment) supports more features than earlier versions, but some limitations remain. Based on comprehensive atomic testing in `tests/integ/local/test_spark_connect_functions.py`, here is what is and isn't supported:
-
-### Test Structure
-The test suite is organized into classes that test specific categories of operations:
-- `TestDataFrameOperations`: Basic DataFrame creation and transformations
-- `TestSQLOperations`: SQL queries, temp views, and GROUP BY operations
-- `TestAggregationFunctions`: Aggregation functions like count, collect_list, concat_ws
-- `TestFileOperations`: File reading and input_file_name function
-- `TestPythonUDFs`: Python user-defined functions
-- `TestActionOperations`: DataFrame actions (expected to fail)
-- `TestComplexOperations`: Complex operations that depend on basic ones
-- `TestUnsupportedOperations`: Operations known to be unsupported
-- `TestIcebergOperations`: Iceberg catalog operations
-- `TestPerformanceAndLimitations`: Performance considerations
 
 ### ✅ Fully Supported (work without issues)
 - **Python UDFs**: User-defined functions written in Python are fully supported
@@ -331,27 +316,19 @@ The test suite is organized into classes that test specific categories of operat
 - **S3/MinIO file operations**: `binaryFile` format and S3A operations work
 - **File listing**: Reading file metadata from S3/MinIO works
 - **File system functions**: `input_file_name()` works for local files
+- **Distributed operations**: `count()`, `groupBy().count()`, `ORDER BY`, `JOIN` operations now work
+- **Window functions**: `ROW_NUMBER()`, `RANK()`, `DENSE_RANK()` now work
+- **Complex aggregations**: `SUM()`, `AVG()`, `MAX()`, `MIN()` with `GROUP BY` now work
+- **Subqueries**: Correlated and non-correlated subqueries now work
+- **CTEs (Common Table Expressions)**: Complex CTEs with multiple subqueries work
+- **String aggregation**: `concat_ws()` with `collect_list()` works
 
 ### ❌ Not Supported (raise exceptions)
-- **DataFrame `count()`**: Not supported as an action in this Spark Connect environment (raises `SparkConnectGrpcException`)
 - **DataFrame `foreach()`**: Not supported; raises serialization errors
 - **RDD operations**: The RDD API is not available in Spark Connect
 - **Custom serialization**: Operations like `map()`, `flatMap()` are not supported
 - **DataFrame transformations with Python lambdas**: e.g., `df.filter(lambda row: ...)` is not supported
 - **Direct SparkContext access**: Not available in Spark Connect architecture
-
-### ⚠️ Partially Supported (work but with limitations)
-- **File system functions**: `input_file_name()` works but may fail on certain file operations
-- **Complex aggregations**: Multi-step aggregations work but may be slow
-
-**Note:**
-- `DataFrame.count()` is not supported as an action in this Spark Connect environment. Attempting to use it will raise a `SparkConnectGrpcException`. Use SQL `COUNT(*)` in queries or aggregations instead, or use other supported actions like `collect()` or `toPandas()` for result retrieval.
-
-### 🔄 Performance Considerations
-- **Remote execution**: All Spark operations run on the remote Spark Connect server
-- **Network overhead**: Operations that require data transfer can be slow
-- **Job scheduling**: Each action triggers a remote job, which has overhead
-- **Memory usage**: Large result sets may cause memory issues during transfer
 
 ### 📋 Best Practices for Spark Connect
 1. **Use DataFrame API**: Prefer DataFrame operations over RDD operations
@@ -359,10 +336,14 @@ The test suite is organized into classes that test specific categories of operat
 3. **Limit result sizes**: Use `take()` or `limit()` instead of `collect()` for large datasets
 4. **Batch operations**: Group multiple operations to reduce network round trips
 5. **Use SQL when possible**: SQL operations are often more efficient than DataFrame API
+6. **Leverage distributed operations**: Now that distributed operations work, use them for better performance
+7. **Use window functions**: For complex aggregations and ranking operations
+8. **Utilize CTEs**: For complex queries that need intermediate results
 
 ### Notes
 - Support for features may vary by Spark version, deployment, and backend configuration
 - The Spark Connect architecture means Python code runs locally while Spark operations run remotely
+- **Major Update**: Distributed operations now work in Spark Connect with proper worker configuration
 - For the latest list of supported and unsupported features, see the [official Spark Connect documentation](https://spark.apache.org/docs/latest/connect/index.html#limitations)
 
 ## Spark Connect Requirements: JARs vs Python Files
@@ -439,47 +420,79 @@ Copy `src/` directory to the Spark Connect container during build (less flexible
 
 **Key Takeaway**: Spark Connect needs JARs for Java-based operations but can handle Python files dynamically through artifacts.
 
-## Common Issues and Quirks
+## Common Issues and Solutions
 
-### Environment Variables vs Configuration Files
+### Critical Issue: Spark Connect Must Be in Workers
 
-**Issue**: Setting environment variables or configuration keys directly in Python code doesn't work for Spark Connect.
+**Problem**: Distributed operations (COUNT, GROUP BY, JOIN) failed with `ClassCastException` errors.
 
-**Why**: Spark Connect is a client-server architecture where:
-- Python code runs locally (your script)
-- Spark operations run remotely (on Spark Connect server)
-- Configuration must be on the server side, not client side
+**Root Cause**: Spark Connect was only running on the master, not on the workers. Distributed operations require Spark Connect to be available on worker nodes.
 
-**Example of what doesn't work**:
+**Solution**: Add Spark Connect to worker containers in `docker-compose.yaml`:
+```yaml
+spark-worker:
+  image: bitnami/spark:3.5
+  environment:
+    - SPARK_MODE=worker
+    - SPARK_MASTER_URL=spark://spark-master:7077
+    - SPARK_WORKER_MEMORY=1G
+    - SPARK_WORKER_CORES=1
+    # Add Spark Connect to workers
+    - SPARK_CONNECT_ENABLED=true
+    - SPARK_CONNECT_PORT=15002
+```
+
+**Result**: After adding Spark Connect to workers, distributed operations now work:
+- ✅ `df.count()` works
+- ✅ `spark.sql("SELECT COUNT(*) FROM table")` works  
+- ✅ `GROUP BY`, `ORDER BY`, `JOIN` operations work
+- ✅ Window functions work
+
+### Critical Issue: spark-defaults.conf Required for Certain Configs
+
+**Problem**: Setting configurations in Python code (via `session.py`) didn't work for Spark Connect.
+
+**Root Cause**: Spark Connect is a client-server architecture. Some configurations must be set on the server side (in `spark-defaults.conf`) rather than the client side (Python code).
+
+**Examples of what doesn't work in Python**:
 ```python
-# ❌ This only sets env vars in YOUR local Python process
-import os
-os.environ['AWS_ACCESS_KEY_ID'] = 'sparkuser'
-os.environ['AWS_SECRET_ACCESS_KEY'] = 'sparkpass'
-
-# ❌ This only configures the CLIENT session, not the SERVER
-spark = (
-    SparkSession.builder
-    .remote("sc://localhost:15002")
-    .config("spark.hadoop.fs.s3a.access.key", "sparkuser")  # Client config only
+# ❌ These only configure the CLIENT, not the SERVER
+spark = SparkSession.builder.remote("sc://localhost:15002")
+    .config("spark.hadoop.fs.s3a.access.key", "admin")  # Client only
+    .config("spark.sql.catalog.iceberg.type", "rest")    # Client only
     .getOrCreate()
-)
 ```
 
-**Solution**: Configure the Spark Connect server via `spark-defaults.conf` or Docker environment variables.
+**Solution**: Put critical configurations in `spark-defaults.conf`:
+```conf
+# Iceberg catalog configuration (server-side)
+spark.sql.catalog.iceberg org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.iceberg.type rest
+spark.sql.catalog.iceberg.uri http://iceberg-rest:8181
+spark.sql.catalog.iceberg.io-impl org.apache.iceberg.aws.s3.S3FileIO
+spark.sql.catalog.iceberg.warehouse s3://data/wh/
+spark.sql.catalog.iceberg.s3.access-key-id admin
+spark.sql.catalog.iceberg.s3.secret-access-key password
+spark.sql.catalog.iceberg.s3.endpoint http://minio:9000
+spark.sql.catalog.iceberg.s3.region us-east-1
+spark.sql.catalog.iceberg.s3.path-style-access true
+spark.sql.catalog.iceberg.s3.ssl-enabled false
+spark.sql.defaultCatalog iceberg
 
-### S3A Authentication Chain
-
-S3A authentication follows this chain:
+# S3A Filesystem configuration (server-side)
+spark.hadoop.fs.s3.impl org.apache.hadoop.fs.s3a.S3AFileSystem
+spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+spark.hadoop.fs.s3a.access.key admin
+spark.hadoop.fs.s3a.secret.key password
+spark.hadoop.fs.s3a.endpoint http://minio:9000
+spark.hadoop.fs.s3a.region us-east-1
+spark.hadoop.fs.s3a.path.style.access true
+spark.hadoop.fs.s3a.connection.ssl.enabled false
 ```
-Your Python Code → Spark Connect Server → S3A Filesystem → MinIO
-```
 
-The authentication happens at the **Spark Connect server level**, not the client level.
+### Issue: Environment Variables vs Configuration Files
 
-### Environment Variables Alone Aren't Enough
-
-**Issue**: Setting environment variables in `docker-compose.yaml` isn't sufficient for S3A authentication.
+**Problem**: Setting environment variables in `docker-compose.yaml` wasn't sufficient for S3A authentication.
 
 **Why**: Spark S3A needs explicit configuration to know:
 - Which credentials provider to use
@@ -496,52 +509,72 @@ spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSC
 spark.hadoop.fs.s3a.endpoint http://minio:9000
 
 # Optional: Explicit credentials (if not using env vars)
-spark.hadoop.fs.s3a.access.key sparkuser
-spark.hadoop.fs.s3a.secret.key sparkpass
+spark.hadoop.fs.s3a.access.key admin
+spark.hadoop.fs.s3a.secret.key password
 ```
 
-### MinIO User Management
+### Issue: S3A vs Iceberg Catalog Configuration
 
-**Issue**: The `admin` user (root user) can't be created via MinIO admin API.
+**Problem**: Confusion between S3A filesystem config and Iceberg catalog config.
 
-**Why**: The `admin` user is the root user and can't be created through the admin API.
+**Key Differences**:
 
-**Solution**: Create a separate user for Spark operations:
-```bash
-# Create a dedicated user for Spark
-mc admin user add minio sparkuser sparkpass
-mc admin policy attach minio readwrite --user sparkuser
-```
+| Aspect | S3A Filesystem | Iceberg Catalog |
+|--------|----------------|-----------------|
+| **Purpose** | Direct S3/MinIO file operations | Iceberg table metadata and catalog operations |
+| **Property prefix** | `spark.hadoop.fs.s3a.*` | `spark.sql.catalog.iceberg.s3.*` |
+| **Access key** | `access.key` | `access-key-id` |
+| **Secret key** | `secret.key` | `secret-access-key` |
+| **Use cases** | `spark.read.text("s3a://bucket/file.txt")` | `spark.sql("CREATE TABLE ...")` |
 
-### Configuration Precedence
-
-**Important**: Explicit configuration in `spark-defaults.conf` takes precedence over environment variables.
-
-**Example**:
+**Solution**: Configure both for complete functionality:
 ```conf
-# This will be used (explicit config)
-spark.hadoop.fs.s3a.access.key sparkuser
+# For direct S3 operations
+spark.hadoop.fs.s3a.access.key admin
+spark.hadoop.fs.s3a.secret.key password
 
-# This will be ignored (env var)
-AWS_ACCESS_KEY_ID=admin
+# For Iceberg catalog operations  
+spark.sql.catalog.iceberg.s3.access-key-id admin
+spark.sql.catalog.iceberg.s3.secret-access-key password
 ```
 
-### Docker Compose Environment Variables
+### Issue: JAR Requirements for Spark Connect
 
-**Issue**: Environment variables in `docker-compose.yaml` only take effect when containers are created, not on restart.
+**Problem**: `Cannot find catalog plugin class for catalog 'iceberg'` errors.
 
-**Solution**: Use `docker-compose down && docker-compose up -d` to recreate containers with new environment variables.
+**Root Cause**: Spark Connect requires JARs to be available in the Spark Connect container for Java-based operations.
 
-### Endpoint Configuration
+**Required JARs**:
+- `iceberg-spark-runtime-3.5_2.12-1.9.1.jar`
+- `spark-avro_2.12-3.5.6.jar`
+- `iceberg-aws-bundle-1.9.1.jar`
+- `postgresql-42.7.3.jar`
 
-**Issue**: Using wrong endpoint hostname causes connection failures.
+**Solution**: Install JARs in `/opt/bitnami/spark/jars/` in the Spark Connect container.
+
+### Issue: Python Files vs JARs in Spark Connect
+
+**Misconception**: Python files need to be built into the Spark Connect container.
+
+**Reality**: 
+- **JARs**: Must be in Spark Connect container for Java operations
+- **Python files**: Can be uploaded dynamically via artifacts
+
+**Solution**: Use dynamic artifacts for Python files:
+```python
+spark = create_spark_connect_session("MyApp", add_artifacts=True)
+```
+
+### Issue: Network Configuration
+
+**Problem**: Connection failures due to wrong endpoint hostnames.
 
 **Context matters**:
 - **Inside Docker network**: Use `http://minio:9000`
 - **From host machine**: Use `http://localhost:9000`
 - **From Spark Connect server**: Use `http://minio:9000`
 
-### Credentials Provider Configuration
+### Issue: Credentials Provider Configuration
 
 **Critical**: Always include the credentials provider configuration:
 ```conf
@@ -550,40 +583,211 @@ spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSC
 
 Without this, Spark S3A doesn't know how to authenticate, even with environment variables set.
 
+### Issue: Configuration Precedence
+
+**Important**: Explicit configuration in `spark-defaults.conf` takes precedence over environment variables.
+
+**Example**:
+```conf
+# This will be used (explicit config)
+spark.hadoop.fs.s3a.access.key admin
+
+# This will be ignored (env var)
+AWS_ACCESS_KEY_ID=admin
+```
+
+### Issue: Docker Compose Environment Variables
+
+**Problem**: Environment variables in `docker-compose.yaml` only take effect when containers are created, not on restart.
+
+**Solution**: Use `docker-compose down && docker-compose up -d` to recreate containers with new environment variables.
+
 ### Complete Working Example
 
-Here's a complete working configuration that uses environment variables:
+Here's a complete working configuration:
 
 **docker-compose.yaml**:
 ```yaml
 spark-connect:
+  image: bitnami/spark:3.5
   environment:
-    - AWS_ACCESS_KEY_ID=sparkuser
-    - AWS_SECRET_ACCESS_KEY=sparkpass
+    - SPARK_MODE=connect
+    - SPARK_CONNECT_PORT=15002
+    - AWS_ACCESS_KEY_ID=admin
+    - AWS_SECRET_ACCESS_KEY=password
+  volumes:
+    - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
 ```
 
 **spark-defaults.conf**:
 ```conf
-# S3A Filesystem configuration using environment variables
+# Iceberg catalog configuration
+spark.sql.catalog.iceberg org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.iceberg.type rest
+spark.sql.catalog.iceberg.uri http://iceberg-rest:8181
+spark.sql.catalog.iceberg.io-impl org.apache.iceberg.aws.s3.S3FileIO
+spark.sql.catalog.iceberg.warehouse s3://data/wh/
+spark.sql.catalog.iceberg.s3.access-key-id admin
+spark.sql.catalog.iceberg.s3.secret-access-key password
+spark.sql.catalog.iceberg.s3.endpoint http://minio:9000
+spark.sql.catalog.iceberg.s3.region us-east-1
+spark.sql.catalog.iceberg.s3.path-style-access true
+spark.sql.catalog.iceberg.s3.ssl-enabled false
+spark.sql.defaultCatalog iceberg
+
+# S3A Filesystem configuration
 spark.hadoop.fs.s3.impl org.apache.hadoop.fs.s3a.S3AFileSystem
 spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+spark.hadoop.fs.s3a.access.key admin
+spark.hadoop.fs.s3a.secret.key password
 spark.hadoop.fs.s3a.endpoint http://minio:9000
 spark.hadoop.fs.s3a.region us-east-1
 spark.hadoop.fs.s3a.path.style.access true
 spark.hadoop.fs.s3a.connection.ssl.enabled false
 ```
 
-The `SimpleAWSCredentialsProvider` will automatically read `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` from environment variables.
+### Troubleshooting Checklist
+
+When Spark Connect operations fail:
+
+1. ✅ **Check if Spark Connect is in workers**: Verify `SPARK_CONNECT_ENABLED=true` in worker containers
+2. ✅ **Verify spark-defaults.conf**: Check that critical configs are in the file, not just Python code
+3. ✅ **Check JAR installation**: Ensure Iceberg JARs are in `/opt/bitnami/spark/jars/`
+4. ✅ **Verify endpoint configuration**: Ensure correct hostname for context
+5. ✅ **Check credentials provider**: Must include `SimpleAWSCredentialsProvider`
+6. ✅ **Restart Spark Connect**: `docker-compose restart spark-connect`
+7. ✅ **Recreate containers if needed**: `docker-compose down && docker-compose up -d`
+8. ✅ **Check MinIO user permissions**: Verify user exists and has proper permissions 
+
+### Issue: S3A SSL Configuration
+
+**Problem**: S3A operations failed due to SSL configuration issues with MinIO.
+
+**Root Cause**: MinIO uses HTTP by default, but Spark S3A might try to use HTTPS, causing connection failures.
+
+**Solution**: Explicitly configure SSL settings for S3A:
+```conf
+# Disable SSL for MinIO (which uses HTTP)
+spark.hadoop.fs.s3a.connection.ssl.enabled false
+spark.hadoop.fs.s3a.ssl.enabled false
+
+# For Iceberg catalog operations
+spark.sql.catalog.iceberg.s3.ssl-enabled false
+```
+
+**Important**: Both S3A filesystem and Iceberg catalog need SSL disabled for MinIO:
+```conf
+# S3A Filesystem SSL settings
+spark.hadoop.fs.s3a.connection.ssl.enabled false
+spark.hadoop.fs.s3a.ssl.enabled false
+
+# Iceberg catalog SSL settings  
+spark.sql.catalog.iceberg.s3.ssl-enabled false
+```
+
+**Alternative**: If using HTTPS MinIO, enable SSL:
+```conf
+# For HTTPS MinIO
+spark.hadoop.fs.s3a.connection.ssl.enabled true
+spark.hadoop.fs.s3a.ssl.enabled true
+spark.sql.catalog.iceberg.s3.ssl-enabled true
+```
+
+### Issue: Environment Variables vs Configuration Files
+
+**Problem**: Setting environment variables in `docker-compose.yaml` wasn't sufficient for S3A authentication.
+
+**Why**: Spark S3A needs explicit configuration to know:
+- Which credentials provider to use
+- What the endpoint is
+- Whether to use path-style access
+- SSL settings
+
+**What you need**:
+```conf
+# Required: Tell Spark to use environment variables
+spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+
+# Required: Tell Spark where MinIO is
+spark.hadoop.fs.s3a.endpoint http://minio:9000
+
+# Optional: Explicit credentials (if not using env vars)
+spark.hadoop.fs.s3a.access.key admin
+spark.hadoop.fs.s3a.secret.key password
+```
+
+### Issue: Configuration Precedence
+
+**Important**: Explicit configuration in `spark-defaults.conf` takes precedence over environment variables.
+
+**Example**:
+```conf
+# This will be used (explicit config)
+spark.hadoop.fs.s3a.access.key admin
+
+# This will be ignored (env var)
+AWS_ACCESS_KEY_ID=admin
+```
+
+### Issue: Docker Compose Environment Variables
+
+**Problem**: Environment variables in `docker-compose.yaml` only take effect when containers are created, not on restart.
+
+**Solution**: Use `docker-compose down && docker-compose up -d` to recreate containers with new environment variables.
+
+### Complete Working Example
+
+Here's a complete working configuration:
+
+**docker-compose.yaml**:
+```yaml
+spark-connect:
+  image: bitnami/spark:3.5
+  environment:
+    - SPARK_MODE=connect
+    - SPARK_CONNECT_PORT=15002
+    - AWS_ACCESS_KEY_ID=admin
+    - AWS_SECRET_ACCESS_KEY=password
+  volumes:
+    - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+```
+
+**spark-defaults.conf**:
+```conf
+# Iceberg catalog configuration
+spark.sql.catalog.iceberg org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.iceberg.type rest
+spark.sql.catalog.iceberg.uri http://iceberg-rest:8181
+spark.sql.catalog.iceberg.io-impl org.apache.iceberg.aws.s3.S3FileIO
+spark.sql.catalog.iceberg.warehouse s3://data/wh/
+spark.sql.catalog.iceberg.s3.access-key-id admin
+spark.sql.catalog.iceberg.s3.secret-access-key password
+spark.sql.catalog.iceberg.s3.endpoint http://minio:9000
+spark.sql.catalog.iceberg.s3.region us-east-1
+spark.sql.catalog.iceberg.s3.path-style-access true
+spark.sql.catalog.iceberg.s3.ssl-enabled false
+spark.sql.defaultCatalog iceberg
+
+# S3A Filesystem configuration
+spark.hadoop.fs.s3.impl org.apache.hadoop.fs.s3a.S3AFileSystem
+spark.hadoop.fs.s3a.aws.credentials.provider org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+spark.hadoop.fs.s3a.access.key admin
+spark.hadoop.fs.s3a.secret.key password
+spark.hadoop.fs.s3a.endpoint http://minio:9000
+spark.hadoop.fs.s3a.region us-east-1
+spark.hadoop.fs.s3a.path.style.access true
+spark.hadoop.fs.s3a.connection.ssl.enabled false
+```
 
 ### Troubleshooting Checklist
 
-When S3A operations fail with 403 Forbidden:
+When Spark Connect operations fail:
 
-1. ✅ **Check if user exists in MinIO**: `mc admin user list minio`
-2. ✅ **Verify user permissions**: `mc admin policy list minio --user sparkuser`
-3. ✅ **Check Spark Connect environment**: `docker exec spark-connect env | grep AWS`
-4. ✅ **Verify spark-defaults.conf**: `docker exec spark-connect cat /opt/bitnami/spark/conf/spark-defaults.conf`
-5. ✅ **Check endpoint configuration**: Ensure correct hostname for context
-6. ✅ **Verify credentials provider**: Must include `SimpleAWSCredentialsProvider`
-7. ✅ **Restart Spark Connect**: `docker-compose restart spark-connect`
-8. ✅ **Recreate containers if needed**: `docker-compose down && docker-compose up -d` 
+1. ✅ **Check if Spark Connect is in workers**: Verify `SPARK_CONNECT_ENABLED=true` in worker containers
+2. ✅ **Verify spark-defaults.conf**: Check that critical configs are in the file, not just Python code
+3. ✅ **Check JAR installation**: Ensure Iceberg JARs are in `/opt/bitnami/spark/jars/`
+4. ✅ **Verify endpoint configuration**: Ensure correct hostname for context
+5. ✅ **Check credentials provider**: Must include `SimpleAWSCredentialsProvider`
+6. ✅ **Restart Spark Connect**: `docker-compose restart spark-connect`
+7. ✅ **Recreate containers if needed**: `docker-compose down && docker-compose up -d`
+8. ✅ **Check MinIO user permissions**: Verify user exists and has proper permissions 

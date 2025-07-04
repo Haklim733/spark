@@ -9,7 +9,7 @@ from src.utils.session import (
     IcebergConfig,
     S3FileSystemConfig,
 )
-from src.insert_legal import (
+from src.process_legal import (
     list_minio_files,
     is_minio_path,
     get_minio_path_info,

@@ -100,21 +100,21 @@ class TestSparkConnectMinIO:
         # List files in the data bucket
         try:
             # Try to list files in the data bucket
-            files_df = spark_connect_minio_session.read.text("s3a://data/")
+            files_df = spark_connect_minio_session.read.text("s3a://raw/")
             file_count = files_df.count()
-            print(f"✅ Successfully listed files in s3a://data/ bucket")
+            print(f"✅ Successfully listed files in s3a://raw/ bucket")
             print(f"   Found {file_count} files/objects")
         except Exception as e:
-            print(f"⚠️  Could not list files in s3a://data/ bucket: {e}")
+            print(f"⚠️  Could not list files in s3a://raw/ bucket: {e}")
 
         # Try to list files in the warehouse bucket
         try:
-            files_df = spark_connect_minio_session.read.text("s3a://data/wh/")
+            files_df = spark_connect_minio_session.read.text("s3a://iceberg/")
             file_count = files_df.count()
-            print(f"✅ Successfully listed files in s3a://data/wh/ bucket")
+            print(f"✅ Successfully listed files in s3a://iceberg/ bucket")
             print(f"   Found {file_count} files/objects")
         except Exception as e:
-            print(f"⚠️  Could not list files in s3a://data/wh/ bucket: {e}")
+            print(f"⚠️  Could not list files in s3a://iceberg/ bucket: {e}")
 
     def test_minio_dataframe_creation_and_write(self, spark_connect_minio_session):
         """Test creating DataFrame and writing to MinIO"""
@@ -337,8 +337,8 @@ class TestSparkConnectMinIO:
         # For now, we'll just verify that our test files exist and can be read
 
         test_paths = [
-            "s3a://data/test_spark_connect",
-            "s3a://data/test_spark_connect_partitioned",
+            "s3a://raw/test_spark_connect",
+            "s3a://raw/test_spark_connect_partitioned",
         ]
 
         for path in test_paths:
@@ -361,8 +361,8 @@ def test_standalone_minio_connection():
     # Create a test file in MinIO
     client = Minio(
         "localhost:9000",
-        access_key="sparkuser",
-        secret_key="sparkpass",
+        access_key="admin",
+        secret_key="password",
         secure=False,
     )
     # Make sure the bucket exists
@@ -389,8 +389,8 @@ def test_standalone_minio_connection():
         #     "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
         # )
         # .config("spark.hadoop.fs.s3a.endpoint", "http://localhost:9000")
-        # .config("spark.hadoop.fs.s3a.access.key", "sparkuser")
-        # .config("spark.hadoop.fs.s3a.secret.key", "sparkpass")
+        # .config("spark.hadoop.fs.s3a.access.key", "admin")
+        # .config("spark.hadoop.fs.s3a.secret.key", "password")
         # .config("spark.hadoop.fs.s3a.force.path.style", "true")
         # .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
         .getOrCreate()
@@ -402,7 +402,7 @@ def test_standalone_minio_connection():
 
     # Test simple S3 operation
     try:
-        files_df = spark.read.text("s3a://data/test.txt")
+        files_df = spark.read.text("s3a://raw/test.txt")
         print(f"✅ Standalone MinIO connection successful")
         # Avoid count() which causes serialization issues in Spark Connect
         schema_fields = files_df.schema.fields

@@ -36,6 +36,7 @@ services:
     volumes:
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+      - ./log4j.properties:/opt/bitnami/spark/conf/log4j.properties
     ports:
       - "8080:8080"
       - "7077:7077"
@@ -51,7 +52,7 @@ services:
     volumes:
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
-      - ./data/warehouse:/data/warehouse
+      - ./conf/log4j.properties:/opt/bitnami/spark/conf/log4j.properties
     ports:
       - "18080:18080"
     environment:
@@ -84,11 +85,12 @@ services:
       - SPARK_CONNECT_SERVER_PORT=15002
       - SPARK_CONNECT_SERVER_HOST=0.0.0.0
       - AWS_REGION=us-east-1
-      - AWS_ACCESS_KEY_ID=sparkuser
-      - AWS_SECRET_ACCESS_KEY=sparkpass
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
     volumes:
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+      - ./log4j.properties:/opt/bitnami/spark/conf/log4j.properties
     ports:
       - "15002:15002"
     command: spark-submit --class org.apache.spark.sql.connect.service.SparkConnectServer
@@ -115,8 +117,8 @@ services:
       - SPARK_EXECUTOR_MEMORY=1G
       - SPARK_WORKLOAD=worker
       - SPARK_LOCAL_IP=spark-worker
-      - AWS_ACCESS_KEY_ID=sparkuser
-      - AWS_SECRET_ACCESS_KEY=sparkpass
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
       - AWS_REGION=us-east-1
       - SPARK_EXECUTOR_LOGS_DIR=/opt/bitnami/spark/logs/executor
       # Spark 3.5 specific configurations
@@ -136,6 +138,7 @@ services:
     volumes:
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+      - ./conf/log4j.properties:/opt/bitnami/spark/conf/log4j.properties
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     scale: 2  # This creates 2 worker instances
   postgres:
@@ -184,7 +187,7 @@ services:
       - AWS_ACCESS_KEY_ID=admin
       - AWS_SECRET_ACCESS_KEY=password
       - AWS_REGION=us-east-1
-      - CATALOG_WAREHOUSE=s3://data/wh
+      - CATALOG_WAREHOUSE=s3://iceberg/
       - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
       - CATALOG_S3_ENDPOINT=http://minio:9000
       - CATALOG_S3_REGION=us-east-1
@@ -221,7 +224,10 @@ services:
     networks:
       spark-network:
         aliases:
-          - data.minio
+          - iceberg.minio
+          - raw.minio
+          - archive.minio
+          - logs.minio
     environment:
       - MINIO_ROOT_USER=admin
       - MINIO_ROOT_PASSWORD=password
@@ -254,18 +260,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    volumes:
+      - ./scripts/init_minio.sh:/init_minio.sh
     entrypoint: |
       /bin/sh -c "
-      /usr/bin/mc alias set minio http://minio:9000 admin password;
-      /usr/bin/mc rm -r --force minio/data || true;
-      /usr/bin/mc mb minio/data;
-      /usr/bin/mc mb minio/data/docs;
-      /usr/bin/mc mb minio/data/docs/legal;
-      /usr/bin/mc mb minio/data/wh;
-      /usr/bin/mc anonymous set public minio/data;
-      /usr/bin/mc admin user add minio sparkuser sparkpass;
-      /usr/bin/mc admin policy attach minio readwrite --user sparkuser;
-      echo 'MinIO buckets and sparkuser created successfully';
+      chmod +x /init_minio.sh;
+      /init_minio.sh;
       tail -f /dev/null"
     restart: unless-stopped
 volumes:

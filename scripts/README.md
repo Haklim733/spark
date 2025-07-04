@@ -61,22 +61,22 @@ Upload data to MinIO storage.
 ### Testing
 ```bash
 # Run environment tests in Docker
-python scripts/run_docker_tests.py --test-file test_environment.py
+uv run -m scripts.run_docker_tests --test-file test_environment.py
 
 # Run session creation tests in Docker
-python scripts/run_docker_tests.py --test-file test_session_creation.py
+uv run -m scripts.run_docker_tests --test-file test_session_creation.py
 
 # Run all tests with coverage
-python scripts/run_docker_tests.py --coverage
+uv run -m scripts.run_docker_tests --coverage
 ```
 
 ### Job Submission
 ```bash
 # Submit shuffling demo
-python scripts/submit.py --file-path src/shuffling.py
+uv run -m scripts.submit --file-path src/shuffling.py
 
 # Submit any Python file
-python scripts/submit.py --file-path src/your_file.py
+uv run -m scripts.submit --file-path src/your_file.py
 ```
 
 ### Direct Docker Commands

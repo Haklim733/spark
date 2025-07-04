@@ -12,18 +12,17 @@ import random
 import uuid
 import json
 import io
+import argparse
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Any
 
 from faker import Faker
 
-# Import MinIO client
 from minio import Minio
 from minio.error import S3Error
 
-# Import shared legal document models and validation
-from schemas.schema import SchemaManager
+from src.schemas.schema import SchemaManager
 
 # Initialize Faker
 fake = Faker()
@@ -39,12 +38,8 @@ def create_minio_client() -> Minio:
     Returns:
         Minio: Configured MinIO client
     """
-    # Use environment variable or default to localhost for local development
-    minio_endpoint = os.getenv("S3_ENDPOINT", "localhost:9000")
-
-    # Strip protocol if present (MinIO client doesn't accept http:// or https://)
-    if minio_endpoint.startswith(("http://", "https://")):
-        minio_endpoint = minio_endpoint.split("://", 1)[1]
+    # Hardcode localhost:9000 since this script is for document generation, not Spark
+    minio_endpoint = "localhost:9000"
 
     print(f"Connecting to MinIO at: {minio_endpoint}")
 
@@ -220,8 +215,6 @@ def create_document_metadata(doc: Dict[str, Any], doc_uuid: str) -> Dict[str, An
             metadata[field_name] = doc["document_id"]
         elif field_name == "document_type":
             metadata[field_name] = doc["document_type"]
-        elif field_name == "content_length":
-            metadata[field_name] = len(doc["content"])
         elif field_name == "generated_at":
             # Ensure UTC timestamp in ISO-8601 format with Z suffix
             generated_at = doc["generated_at"]
@@ -262,11 +255,24 @@ def create_document_metadata(doc: Dict[str, Any], doc_uuid: str) -> Dict[str, An
             field_props = properties.get(field_name, {})
             default_value = field_props.get("default", "soli_legal_document_generator")
             metadata[field_name] = default_value
-        else:
-            # For any other fields, try to get from doc or use schema default
+        elif field_name == "language":
+            # Use default from schema if available
             field_props = properties.get(field_name, {})
-            default_value = field_props.get("default")
-            metadata[field_name] = doc.get(field_name, default_value)
+            default_value = field_props.get("default", "en")
+            metadata[field_name] = default_value
+        elif field_name == "file_size":
+            # Calculate file size from content
+            content_size = len(doc["content"].encode("utf-8"))
+            metadata[field_name] = content_size
+        elif field_name == "file_path":
+            # Set placeholder that will be updated during save
+            metadata[field_name] = f"placeholder/{doc['document_id']}.txt"
+        elif field_name == "method":
+            # Use default method for generation
+            metadata[field_name] = "sequential"
+        else:
+            # For any other fields, use null if not relevant
+            metadata[field_name] = None
 
     return metadata
 
@@ -274,18 +280,20 @@ def create_document_metadata(doc: Dict[str, Any], doc_uuid: str) -> Dict[str, An
 def save_documents_to_minio(
     documents: List[Dict[str, Any]],
     bucket_name: str = "data",
-    base_path: str = "docs/legal",
+    key: str = "docs/legal",
 ) -> None:
     """
     Save documents as individual text files with separate JSON metadata files in MinIO.
-    Structure: /docs/legal/{document_type}/{date}/{uuid}.txt + {uuid}.json
+    Structure: {key}/{document_type}/{date}/{uuid}.txt + {uuid}.json
 
     Args:
         documents: List of document dictionaries
         bucket_name: MinIO bucket name
-        base_path: Base path for documents
+        key: Key path for documents within the bucket
     """
     print(f"Saving {len(documents)} documents with metadata to MinIO")
+    print(f"Bucket: {bucket_name}")
+    print(f"Key: {key}")
 
     # Create MinIO client
     minio_client = create_minio_client()
@@ -305,8 +313,9 @@ def save_documents_to_minio(
         content_filename = f"{doc_id}.txt"
         metadata_filename = f"{doc_id}.json"
 
-        content_path = f"{base_path}/{doc_type}/{current_date}/{content_filename}"
-        metadata_path = f"{base_path}/{doc_type}/{current_date}/{metadata_filename}"
+        # Build full paths within the bucket
+        content_path = f"{key}/{doc_type}/{current_date}/{content_filename}"
+        metadata_path = f"{key}/{doc_type}/{current_date}/{metadata_filename}"
 
         # Prepare content
         content = doc["content"]
@@ -345,10 +354,10 @@ def save_documents_to_minio(
                 content_type="application/json",
             )
 
-            # Update document record with file paths
+            # Update document record with file paths (use s3a:// format)
             doc["filename"] = content_filename
-            doc["file_path"] = f"s3://{bucket_name}/{content_path}"
-            doc["metadata_path"] = f"s3://{bucket_name}/{metadata_path}"
+            doc["file_path"] = f"s3a://{bucket_name}/{content_path}"
+            doc["metadata_path"] = f"s3a://{bucket_name}/{metadata_path}"
 
             total_saved += 1
             total_metadata_saved += 1
@@ -363,7 +372,7 @@ def save_documents_to_minio(
     print(f"\nSuccessfully saved {total_saved} text files to MinIO")
     print(f"Successfully saved {total_metadata_saved} metadata files to MinIO")
     print(
-        f"Structure: s3://{bucket_name}/{base_path}/{{doc_type}}/{current_date}/{{uuid}}.txt + .json"
+        f"Structure: s3a://{bucket_name}/{key}/{{doc_type}}/{current_date}/{{uuid}}.txt + .json"
     )
     print(f"Date directory: {current_date}")
 
@@ -392,9 +401,12 @@ def generate_legal_documents(num_docs: int = 1000) -> List[Dict[str, Any]]:
             # Generate content using template formatting
             content = generate_document_content(doc_type, i + 1)
 
+            # Generate UUID for document ID
+            doc_uuid = str(uuid.uuid4())
+
             # Create document record with UTC timestamp
             document = {
-                "document_id": f"doc_{i+1:04d}",
+                "document_id": doc_uuid,  # Use UUID instead of counter
                 "document_type": doc_type["name"],
                 "content": content,
                 "filename": "",
@@ -453,9 +465,12 @@ def generate_specific_document_type(
             # Generate content using template formatting
             content = generate_document_content(doc_type, i + 1)
 
+            # Generate UUID for document ID
+            doc_uuid = str(uuid.uuid4())
+
             # Create document record
             document = {
-                "document_id": f"{doc_type_name}_{i+1:04d}",
+                "document_id": doc_uuid,  # Use UUID instead of counter
                 "document_type": doc_type["name"],
                 "content": content,
                 "filename": "",  # Will be set during save
@@ -478,24 +493,54 @@ def generate_specific_document_type(
     return documents
 
 
-def main(num_docs: int = 1000):
-    """Main function to generate legal documents and save to MinIO"""
+def main():
+    """Main function to generate legal documents and save to specified location"""
+
+    parser = argparse.ArgumentParser(
+        description="Generate legal documents using template formatting"
+    )
+
+    parser.add_argument(
+        "--num-docs",
+        type=int,
+        default=1000,
+        help="Number of documents to generate (default: 1000)",
+    )
+
+    parser.add_argument(
+        "--bucket",
+        type=str,
+        default="data",
+        help="MinIO bucket name (default: data)",
+    )
+
+    parser.add_argument(
+        "--key",
+        type=str,
+        default="docs/legal",
+        help="Key path for documents in MinIO (default: docs/legal)",
+    )
+
+    parser.add_argument(
+        "--doc-type", type=str, help="Generate only documents of this specific type"
+    )
+
+    args = parser.parse_args()
 
     try:
-        # Generate all document types randomly
-        documents = generate_legal_documents(num_docs=num_docs)
+        # Generate documents
+        if args.doc_type:
+            # Generate specific document type
+            documents = generate_specific_document_type(args.doc_type, args.num_docs)
+        else:
+            # Generate all document types randomly
+            documents = generate_legal_documents(num_docs=args.num_docs)
 
         if not documents:
             print("No documents were generated successfully. Exiting.")
             return
 
-        # Save documents to MinIO
-        save_documents_to_minio(documents, "data", "docs/legal")
-
-        # Option: Generate specific document type only
-        # Uncomment the lines below to generate only contracts
-        # documents = generate_specific_document_type("contract", num_docs=100)
-        # save_documents_to_minio(documents, "data", "docs/legal")
+        save_documents_to_minio(documents, args.bucket, args.key)
 
     except Exception as e:
         print(f"Error in main execution: {e}")

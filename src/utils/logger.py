@@ -5,10 +5,12 @@ import logging
 import queue
 import threading
 import time
+import os
+import glob
 from typing import Dict, Any, Optional
 from pyspark.sql import SparkSession
 from .session import create_spark_session
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -234,6 +236,20 @@ class HybridLogger:
         self.log_count = 0
         self.start_time = time.time()
 
+        # Log sync configuration
+        self.enable_log_sync = os.getenv("ENABLE_LOG_SYNC", "true").lower() == "true"
+        self.spark_logs_dir = "/opt/bitnami/spark/logs"
+        self.minio_logs_bucket = "logs"
+        self.log_sync_interval = int(
+            os.getenv("LOG_SYNC_INTERVAL", "300")
+        )  # 5 minutes default
+        self.last_sync_time = time.time()
+
+        # Add job and batch tracking state
+        self._job_tracking = {}
+        self._batch_tracking = {}
+        self._file_tracking = {}
+
     def _async_log_worker(self):
         """Background thread for processing log messages asynchronously"""
         python_logger = self._setup_python_logger()
@@ -255,7 +271,24 @@ class HybridLogger:
 
                 # Process batch
                 for log_entry in logs:
-                    python_logger.info(log_entry)
+                    if isinstance(log_entry, tuple):
+                        # Structured log entry (log_type, data)
+                        log_type, data = log_entry
+                        if log_type in [
+                            "job_metrics",
+                            "batch_metrics",
+                            "operation_metrics",
+                        ]:
+                            # Log structured metrics with appropriate prefix
+                            python_logger.info(
+                                f"{log_type.upper()}: {json.dumps(data)}"
+                            )
+                        else:
+                            # Fallback for unknown structured logs
+                            python_logger.info(f"STRUCTURED_LOG: {json.dumps(data)}")
+                    else:
+                        # Simple string log entry (backward compatibility)
+                        python_logger.info(log_entry)
 
                 # Small delay to prevent CPU spinning
                 time.sleep(0.01)
@@ -493,7 +526,15 @@ class HybridLogger:
             },
         )
 
-        # 1. Shutdown metrics tracker
+        # 1. Final log sync before shutdown
+        if self.enable_log_sync:
+            try:
+                sync_results = self.force_sync_logs()
+                self.log_performance("final_log_sync", sync_results)
+            except Exception as e:
+                self.log_error(e, {"operation": "final_log_sync"})
+
+        # 2. Shutdown metrics tracker
         if self.metrics_tracker is not None:
             try:
                 self.metrics_tracker.shutdown()
@@ -501,13 +542,13 @@ class HybridLogger:
             except Exception as e:
                 self.log_error(e, {"operation": "metrics_tracker_shutdown"})
 
-        # 2. Shutdown async logger
+        # 3. Shutdown async logger
         if self.enable_async:
             self.running = False
             if hasattr(self, "log_thread") and self.log_thread.is_alive():
                 self.log_thread.join(timeout=5)
 
-        # 3. Shutdown Spark session if we own it
+        # 4. Shutdown Spark session if we own it
         if self._owns_spark and self.spark is not None:
             try:
                 self.spark.stop()
@@ -575,3 +616,698 @@ class HybridLogger:
         if self.metrics_tracker is not None:
             return self.metrics_tracker.get_metrics()
         return {}
+
+    def sync_logs_to_minio(self, force_sync: bool = False) -> Dict[str, Any]:
+        """
+        Sync Spark logs to MinIO logs bucket
+
+        Args:
+            force_sync: Force sync even if interval hasn't passed
+
+        Returns:
+            Dictionary with sync results
+        """
+        if not self.enable_log_sync or not self.spark:
+            return {
+                "status": "disabled",
+                "reason": "Log sync disabled or no Spark session",
+            }
+
+        current_time = time.time()
+        if (
+            not force_sync
+            and (current_time - self.last_sync_time) < self.log_sync_interval
+        ):
+            return {"status": "skipped", "reason": "Sync interval not reached"}
+
+        try:
+            self.log_performance(
+                "log_sync_started",
+                {
+                    "sync_interval": self.log_sync_interval,
+                    "last_sync": self.last_sync_time,
+                    "current_time": current_time,
+                },
+            )
+
+            sync_results = {
+                "status": "success",
+                "files_synced": 0,
+                "errors": [],
+                "start_time": current_time,
+            }
+
+            # Define log file patterns and their MinIO destinations
+            log_patterns = {
+                "spark-application.log*": "application/",
+                "hybrid-observability.log*": "observability/",
+                "spark-*.out": "system/",
+                "executor/": "executor/",
+            }
+
+            for pattern, minio_folder in log_patterns.items():
+                try:
+                    files_synced = self._sync_log_pattern(pattern, minio_folder)
+                    sync_results["files_synced"] += files_synced
+
+                    if files_synced > 0:
+                        self.log_business_event(
+                            "logs_synced",
+                            {
+                                "pattern": pattern,
+                                "destination": f"{self.minio_logs_bucket}/{minio_folder}",
+                                "files_count": files_synced,
+                            },
+                        )
+
+                except Exception as e:
+                    error_msg = f"Error syncing {pattern}: {str(e)}"
+                    sync_results["errors"].append(error_msg)
+                    self.log_error(e, {"operation": "log_sync", "pattern": pattern})
+
+            # Update last sync time
+            self.last_sync_time = current_time
+
+            # Log sync completion
+            sync_results["end_time"] = time.time()
+            sync_results["duration_seconds"] = (
+                sync_results["end_time"] - sync_results["start_time"]
+            )
+
+            self.log_performance("log_sync_completed", sync_results)
+
+            return sync_results
+
+        except Exception as e:
+            self.log_error(e, {"operation": "log_sync"})
+            return {
+                "status": "failed",
+                "error": str(e),
+                "files_synced": 0,
+                "errors": [str(e)],
+            }
+
+    def _sync_log_pattern(self, pattern: str, minio_folder: str) -> int:
+        """
+        Sync a specific log pattern to MinIO
+
+        Args:
+            pattern: File pattern to match (e.g., "spark-application.log*")
+            minio_folder: MinIO destination folder
+
+        Returns:
+            Number of files synced
+        """
+        files_synced = 0
+
+        try:
+            # Find matching files
+            if pattern.endswith("/"):
+                # Directory pattern
+                source_path = os.path.join(self.spark_logs_dir, pattern)
+                if os.path.exists(source_path):
+                    # Use Spark to copy directory
+                    source_df = self.spark.read.text(source_path)
+                    if source_df.count() > 0:
+                        source_df.write.mode("append").text(
+                            f"s3a://{self.minio_logs_bucket}/{minio_folder}"
+                        )
+                        files_synced = 1
+            else:
+                # File pattern
+                file_pattern = os.path.join(self.spark_logs_dir, pattern)
+                matching_files = glob.glob(file_pattern)
+
+                for file_path in matching_files:
+                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                        # Read file and write to MinIO using Spark
+                        file_df = self.spark.read.text(file_path)
+                        if file_df.count() > 0:
+                            # Create timestamped folder for organization
+                            timestamp = datetime.now().strftime("%Y/%m/%d/%H")
+                            minio_path = f"s3a://{self.minio_logs_bucket}/{minio_folder}{timestamp}/"
+
+                            file_df.write.mode("append").text(minio_path)
+                            files_synced += 1
+
+                            # Log individual file sync
+                            self.log_business_event(
+                                "log_file_synced",
+                                {
+                                    "source_file": file_path,
+                                    "destination": minio_path,
+                                    "file_size_bytes": os.path.getsize(file_path),
+                                },
+                            )
+
+        except Exception as e:
+            self.log_error(
+                e,
+                {
+                    "operation": "sync_log_pattern",
+                    "pattern": pattern,
+                    "minio_folder": minio_folder,
+                },
+            )
+            raise
+
+        return files_synced
+
+    def auto_sync_logs(self):
+        """
+        Automatically sync logs if interval has passed
+        This can be called periodically or after important operations
+        """
+        if self.enable_log_sync:
+            self.sync_logs_to_minio()
+
+    def force_sync_logs(self) -> Dict[str, Any]:
+        """
+        Force immediate log sync regardless of interval
+
+        Returns:
+            Dictionary with sync results
+        """
+        return self.sync_logs_to_minio(force_sync=True)
+
+    def log_job_metrics(self, job_id: str, metrics: Dict[str, Any]):
+        """Log job-level metrics to a separate job metrics log"""
+        try:
+            job_log_entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "level": "JOB_METRICS",
+                "job_id": job_id,
+                "metrics": metrics,
+            }
+
+            if self.enable_async:
+                self.log_queue.put(("job_metrics", job_log_entry))
+            else:
+                self._log_sync("job_metrics", job_log_entry)
+
+        except Exception as e:
+            print(f"Error logging job metrics: {e}")
+
+    def log_batch_metrics(self, job_id: str, batch_id: str, metrics: Dict[str, Any]):
+        """Log batch-level metrics to a separate batch metrics log"""
+        try:
+            batch_log_entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "level": "BATCH_METRICS",
+                "job_id": job_id,
+                "batch_id": batch_id,
+                "metrics": metrics,
+            }
+
+            if self.enable_async:
+                self.log_queue.put(("batch_metrics", batch_log_entry))
+            else:
+                self._log_sync("batch_metrics", batch_log_entry)
+
+        except Exception as e:
+            print(f"Error logging batch metrics: {e}")
+
+    def log_operation_metrics(
+        self, job_id: str, batch_id: str, operation_name: str, metrics: Dict[str, Any]
+    ):
+        """Log operation-level metrics to a separate operation metrics log"""
+        try:
+            operation_log_entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "level": "OPERATION_METRICS",
+                "job_id": job_id,
+                "batch_id": batch_id,
+                "operation_name": operation_name,
+                "metrics": metrics,
+            }
+
+            if self.enable_async:
+                self.log_queue.put(("operation_metrics", operation_log_entry))
+            else:
+                self._log_sync("operation_metrics", operation_log_entry)
+
+        except Exception as e:
+            print(f"Error logging operation metrics: {e}")
+
+    # Enhanced job and batch tracking for parallel workloads
+    def start_job_tracking(self, job_id: str, job_metadata: Dict[str, Any] = None):
+        """
+        Start tracking a new job with comprehensive metrics
+
+        Args:
+            job_id: Unique job identifier
+            job_metadata: Additional job metadata
+        """
+        self._job_tracking[job_id] = {
+            "job_id": job_id,
+            "start_time": datetime.now(timezone.utc),
+            "end_time": None,
+            "status": "running",
+            "batches": [],
+            "total_files_to_be_processed": 0,
+            "total_files_processed": 0,
+            "total_files_successful": 0,
+            "total_files_failed": 0,
+            "total_files_missing": 0,
+            "total_records_processed": 0,
+            "total_records_loaded": 0,
+            "total_records_failed": 0,
+            "total_file_size_bytes": 0,
+            "errors": [],
+            "error_codes": {},
+            "performance_metrics": {},
+            "metadata": job_metadata or {},
+        }
+
+        self.log_job_metrics(
+            job_id,
+            {
+                "event": "job_started",
+                "start_time": self._job_tracking[job_id]["start_time"].isoformat(),
+                "status": "running",
+                "metadata": job_metadata or {},
+            },
+        )
+
+    def start_batch_tracking(
+        self, job_id: str, batch_id: str, batch_metadata: Dict[str, Any] = None
+    ):
+        """
+        Start tracking a new batch within a job
+
+        Args:
+            job_id: Parent job identifier
+            batch_id: Unique batch identifier
+            batch_metadata: Additional batch metadata
+        """
+        batch_key = f"{job_id}_{batch_id}"
+        self._batch_tracking[batch_key] = {
+            "job_id": job_id,
+            "batch_id": batch_id,
+            "start_time": datetime.now(timezone.utc),
+            "end_time": None,
+            "status": "running",
+            "files_to_be_processed": 0,
+            "files_processed": 0,
+            "files_successful": 0,
+            "files_failed": 0,
+            "files_missing": 0,
+            "records_processed": 0,
+            "records_loaded": 0,
+            "records_failed": 0,
+            "file_size_bytes": 0,
+            "errors": [],
+            "error_codes": {},
+            "performance_metrics": {},
+            "metadata": batch_metadata or {},
+        }
+
+        # Add batch to job tracking
+        if job_id in self._job_tracking:
+            self._job_tracking[job_id]["batches"].append(batch_id)
+
+        self.log_batch_metrics(
+            job_id,
+            batch_id,
+            {
+                "event": "batch_started",
+                "start_time": self._batch_tracking[batch_key]["start_time"].isoformat(),
+                "status": "running",
+                "metadata": batch_metadata or {},
+            },
+        )
+
+    def set_files_to_be_processed(self, job_id: str, batch_id: str, file_count: int):
+        """
+        Set the number of files to be processed (discovered files)
+
+        Args:
+            job_id: Parent job identifier
+            batch_id: Batch identifier
+            file_count: Number of files discovered/listed
+        """
+        batch_key = f"{job_id}_{batch_id}"
+        if batch_key in self._batch_tracking:
+            self._batch_tracking[batch_key]["files_to_be_processed"] = file_count
+
+        # Update job tracking
+        if job_id in self._job_tracking:
+            self._job_tracking[job_id]["total_files_to_be_processed"] += file_count
+
+    def log_file_success(
+        self,
+        batch_id: str,
+        file_path: str,
+        file_size: int = 0,
+        records_loaded: int = 0,
+        processing_time_ms: float = 0,
+        metadata: Dict[str, Any] = None,
+    ):
+        """
+        Log successful file processing
+
+        Args:
+            batch_id: Batch identifier
+            file_path: Path to the processed file
+            file_size: Size of the file in bytes
+            records_loaded: Number of records loaded from the file
+            processing_time_ms: Processing time in milliseconds
+            metadata: Additional file metadata
+        """
+        # Track file success
+        file_key = f"{batch_id}_{file_path}"
+        self._file_tracking[file_key] = {
+            "batch_id": batch_id,
+            "file_path": file_path,
+            "status": "success",
+            "file_size": file_size,
+            "records_loaded": records_loaded,
+            "processing_time_ms": processing_time_ms,
+            "timestamp": datetime.now(timezone.utc),
+            "metadata": metadata or {},
+        }
+
+        # Update batch tracking
+        for batch_key, batch_data in self._batch_tracking.items():
+            if batch_data["batch_id"] == batch_id:
+                batch_data["files_processed"] += 1
+                batch_data["files_successful"] += 1
+                batch_data["records_loaded"] += records_loaded
+                batch_data["file_size_bytes"] += file_size
+                break
+
+        # Update job tracking
+        job_id = None
+        for batch_key, batch_data in self._batch_tracking.items():
+            if batch_data["batch_id"] == batch_id:
+                job_id = batch_data["job_id"]
+                break
+
+        if job_id and job_id in self._job_tracking:
+            self._job_tracking[job_id]["total_files_processed"] += 1
+            self._job_tracking[job_id]["total_files_successful"] += 1
+            self._job_tracking[job_id]["total_records_loaded"] += records_loaded
+            self._job_tracking[job_id]["total_file_size_bytes"] += file_size
+
+        # Log business event
+        self.log_business_event(
+            "file_processed_success",
+            {
+                "batch_id": batch_id,
+                "file_path": file_path,
+                "file_size": file_size,
+                "records_loaded": records_loaded,
+                "processing_time_ms": processing_time_ms,
+                "metadata": metadata or {},
+            },
+        )
+
+    def log_file_failure(
+        self,
+        batch_id: str,
+        file_path: str,
+        error_type: str,
+        error_message: str,
+        error_code: str = "E999",
+        file_size: int = 0,
+        metadata: Dict[str, Any] = None,
+    ):
+        """
+        Log failed file processing
+
+        Args:
+            batch_id: Batch identifier
+            file_path: Path to the failed file
+            error_type: Type of error
+            error_message: Error message
+            error_code: Error code
+            file_size: Size of the file in bytes
+            metadata: Additional file metadata
+        """
+        # Track file failure
+        file_key = f"{batch_id}_{file_path}"
+        self._file_tracking[file_key] = {
+            "batch_id": batch_id,
+            "file_path": file_path,
+            "status": "failed",
+            "error_type": error_type,
+            "error_message": error_message,
+            "error_code": error_code,
+            "file_size": file_size,
+            "timestamp": datetime.now(timezone.utc),
+            "metadata": metadata or {},
+        }
+
+        # Update batch tracking
+        for batch_key, batch_data in self._batch_tracking.items():
+            if batch_data["batch_id"] == batch_id:
+                batch_data["files_processed"] += 1
+                batch_data["files_failed"] += 1
+                batch_data["file_size_bytes"] += file_size
+                batch_data["errors"].append(
+                    {
+                        "file_path": file_path,
+                        "error_type": error_type,
+                        "error_message": error_message,
+                        "error_code": error_code,
+                    }
+                )
+                batch_data["error_codes"][error_code] = (
+                    batch_data["error_codes"].get(error_code, 0) + 1
+                )
+                break
+
+        # Update job tracking
+        job_id = None
+        for batch_key, batch_data in self._batch_tracking.items():
+            if batch_data["batch_id"] == batch_id:
+                job_id = batch_data["job_id"]
+                break
+
+        if job_id and job_id in self._job_tracking:
+            self._job_tracking[job_id]["total_files_processed"] += 1
+            self._job_tracking[job_id]["total_files_failed"] += 1
+            self._job_tracking[job_id]["total_file_size_bytes"] += file_size
+            self._job_tracking[job_id]["errors"].append(
+                {
+                    "batch_id": batch_id,
+                    "file_path": file_path,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "error_code": error_code,
+                }
+            )
+            self._job_tracking[job_id]["error_codes"][error_code] = (
+                self._job_tracking[job_id]["error_codes"].get(error_code, 0) + 1
+            )
+
+        # Log business event
+        self.log_business_event(
+            "file_processed_failure",
+            {
+                "batch_id": batch_id,
+                "file_path": file_path,
+                "error_type": error_type,
+                "error_message": error_message,
+                "error_code": error_code,
+                "file_size": file_size,
+                "metadata": metadata or {},
+            },
+        )
+
+    def end_batch_tracking(
+        self,
+        job_id: str,
+        batch_id: str,
+        expected_files: int = None,
+        performance_metrics: Dict[str, Any] = None,
+    ):
+        """
+        End tracking for a batch and determine its status
+
+        Args:
+            job_id: Parent job identifier
+            batch_id: Batch identifier
+            expected_files: Expected number of files (for missing file calculation)
+            performance_metrics: Additional performance metrics
+        """
+        batch_key = f"{job_id}_{batch_id}"
+        if batch_key not in self._batch_tracking:
+            return
+
+        batch_data = self._batch_tracking[batch_key]
+        batch_data["end_time"] = datetime.now(timezone.utc)
+        batch_data["duration_ms"] = (
+            batch_data["end_time"] - batch_data["start_time"]
+        ).total_seconds() * 1000
+
+        # Calculate missing files
+        if expected_files is not None:
+            batch_data["files_expected"] = expected_files
+            batch_data["files_missing"] = max(
+                0, expected_files - batch_data["files_processed"]
+            )
+
+        # Determine batch status
+        if batch_data["files_failed"] == 0 and batch_data["files_missing"] == 0:
+            batch_data["status"] = "success"
+        elif batch_data["files_successful"] > 0:
+            batch_data["status"] = "partial_success"
+        else:
+            batch_data["status"] = "failed"
+
+        # Add performance metrics
+        if performance_metrics:
+            batch_data["performance_metrics"].update(performance_metrics)
+
+        # Calculate processing rates
+        if batch_data["duration_ms"] > 0:
+            batch_data["processing_rate_files_per_sec"] = batch_data[
+                "files_processed"
+            ] / (batch_data["duration_ms"] / 1000)
+            if batch_data["records_loaded"] > 0:
+                batch_data["processing_rate_records_per_sec"] = batch_data[
+                    "records_loaded"
+                ] / (batch_data["duration_ms"] / 1000)
+
+        self.log_batch_metrics(
+            job_id,
+            batch_id,
+            {
+                "event": "batch_completed",
+                "end_time": batch_data["end_time"].isoformat(),
+                "duration_ms": batch_data["duration_ms"],
+                "status": batch_data["status"],
+                "files_processed": batch_data["files_processed"],
+                "files_successful": batch_data["files_successful"],
+                "files_failed": batch_data["files_failed"],
+                "files_missing": batch_data["files_missing"],
+                "records_loaded": batch_data["records_loaded"],
+                "file_size_bytes": batch_data["file_size_bytes"],
+                "error_count": len(batch_data["errors"]),
+                "error_codes": batch_data["error_codes"],
+                "performance_metrics": batch_data["performance_metrics"],
+            },
+        )
+
+    def end_job_tracking(
+        self,
+        job_id: str,
+        expected_files: int = None,
+        performance_metrics: Dict[str, Any] = None,
+    ):
+        """
+        End tracking for a job and determine its overall status
+
+        Args:
+            job_id: Job identifier
+            expected_files: Expected number of files (for missing file calculation)
+            performance_metrics: Additional performance metrics
+        """
+        if job_id not in self._job_tracking:
+            return
+
+        job_data = self._job_tracking[job_id]
+        job_data["end_time"] = datetime.now(timezone.utc)
+        job_data["duration_ms"] = (
+            job_data["end_time"] - job_data["start_time"]
+        ).total_seconds() * 1000
+
+        # Calculate missing files
+        if expected_files is not None:
+            job_data["total_files_expected"] = expected_files
+            job_data["total_files_missing"] = max(
+                0, expected_files - job_data["total_files_processed"]
+            )
+
+        # Determine job status based on all batches
+        failed_batches = 0
+        partial_batches = 0
+        successful_batches = 0
+
+        for batch_id in job_data["batches"]:
+            batch_key = f"{job_id}_{batch_id}"
+            if batch_key in self._batch_tracking:
+                batch_status = self._batch_tracking[batch_key]["status"]
+                if batch_status == "failed":
+                    failed_batches += 1
+                elif batch_status == "partial_success":
+                    partial_batches += 1
+                elif batch_status == "success":
+                    successful_batches += 1
+
+        # Determine overall job status
+        if failed_batches == 0 and partial_batches == 0:
+            job_data["status"] = "success"
+        elif failed_batches == len(job_data["batches"]):
+            job_data["status"] = "failed"
+        else:
+            job_data["status"] = "partial_success"
+
+        # Add performance metrics
+        if performance_metrics:
+            job_data["performance_metrics"].update(performance_metrics)
+
+        # Calculate processing rates
+        if job_data["duration_ms"] > 0:
+            job_data["processing_rate_files_per_sec"] = job_data[
+                "total_files_processed"
+            ] / (job_data["duration_ms"] / 1000)
+            if job_data["total_records_loaded"] > 0:
+                job_data["processing_rate_records_per_sec"] = job_data[
+                    "total_records_loaded"
+                ] / (job_data["duration_ms"] / 1000)
+
+        self.log_job_metrics(
+            job_id,
+            {
+                "event": "job_completed",
+                "end_time": job_data["end_time"].isoformat(),
+                "duration_ms": job_data["duration_ms"],
+                "status": job_data["status"],
+                "total_files_processed": job_data["total_files_processed"],
+                "total_files_successful": job_data["total_files_successful"],
+                "total_files_failed": job_data["total_files_failed"],
+                "total_files_missing": job_data["total_files_missing"],
+                "total_records_loaded": job_data["total_records_loaded"],
+                "total_file_size_bytes": job_data["total_file_size_bytes"],
+                "batches_total": len(job_data["batches"]),
+                "batches_successful": successful_batches,
+                "batches_partial": partial_batches,
+                "batches_failed": failed_batches,
+                "error_count": len(job_data["errors"]),
+                "error_codes": job_data["error_codes"],
+                "performance_metrics": job_data["performance_metrics"],
+            },
+        )
+
+    def get_job_summary(self, job_id: str) -> Dict[str, Any]:
+        """Get comprehensive summary of a job including all its batches"""
+        if job_id not in self._job_tracking:
+            return {}
+
+        job_data = self._job_tracking[job_id].copy()
+
+        # Add batch details
+        job_data["batch_details"] = {}
+        for batch_id in job_data["batches"]:
+            batch_key = f"{job_id}_{batch_id}"
+            if batch_key in self._batch_tracking:
+                job_data["batch_details"][batch_id] = self._batch_tracking[
+                    batch_key
+                ].copy()
+
+        return job_data
+
+    def get_batch_summary(self, job_id: str, batch_id: str) -> Dict[str, Any]:
+        """Get comprehensive summary of a specific batch"""
+        batch_key = f"{job_id}_{batch_id}"
+        if batch_key not in self._batch_tracking:
+            return {}
+
+        return self._batch_tracking[batch_key].copy()
+
+    def _log_sync(self, log_type: str, log_entry: Dict[str, Any]):
+        """Synchronous logging fallback"""
+        python_logger = self._setup_python_logger()
+        python_logger.info(f"{log_type.upper()}: {json.dumps(log_entry)}")

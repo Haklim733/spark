@@ -19,7 +19,7 @@ CREATE OR REPLACE TABLE legal.documents (
     
     -- ELT Load tracking fields
     batch_id STRING COMMENT 'Links to batch_jobs table for operational tracking',
-    job_id STRING COMMENT 'Job identifier for operational tracking and debugging',    
+    job_id STRING COMMENT 'Job identifier for operational tracking and debugging'    
 )
 USING iceberg
 PARTITIONED BY (document_type, month(generated_at))

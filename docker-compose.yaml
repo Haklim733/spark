@@ -36,7 +36,7 @@ services:
     volumes:
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
-      - ./log4j.properties:/opt/bitnami/spark/conf/log4j.properties
+      - ./log4j2.properties:/opt/bitnami/spark/conf/log4j2.properties:ro
     ports:
       - "8080:8080"
       - "7077:7077"
@@ -52,7 +52,7 @@ services:
     volumes:
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
-      - ./log4j.properties:/opt/bitnami/spark/conf/log4j.properties
+      - ./log4j2.properties:/opt/bitnami/spark/conf/log4j2.properties:ro
     ports:
       - "18080:18080"
     environment:
@@ -90,10 +90,11 @@ services:
     volumes:
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
-      - ./log4j.properties:/opt/bitnami/spark/conf/log4j.properties
+      - ./log4j2.properties:/opt/bitnami/spark/conf/log4j2.properties:ro
     ports:
       - "15002:15002"
     command: spark-submit --class org.apache.spark.sql.connect.service.SparkConnectServer
+    entrypoint: ["/bin/bash", "-c", "mkdir -p /opt/bitnami/spark/logs/app && exec \"$@\"", "--"]
   spark-worker:
     build: 
       context: .
@@ -138,7 +139,7 @@ services:
     volumes:
       - ./spark-logs:/opt/bitnami/spark/logs
       - ./spark-defaults.conf:/opt/bitnami/spark/conf/spark-defaults.conf
-      - ./log4j.properties:/opt/bitnami/spark/conf/log4j.properties
+      - ./log4j2.properties:/opt/bitnami/spark/conf/log4j2.properties:ro
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     scale: 2  # This creates 2 worker instances
   postgres:

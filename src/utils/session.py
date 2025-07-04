@@ -5,6 +5,8 @@ from pathlib import Path
 import zipfile
 import tempfile
 from typing import Dict, Optional
+from dataclasses import dataclass
+from abc import ABC, abstractmethod
 
 from pyspark.sql import SparkSession
 
@@ -18,27 +20,36 @@ class SparkVersion(Enum):
     SPARK_4_0 = "spark_4_0"  # Regular PySpark (4.0)
 
 
-class S3FileSystemConfig:
+class SparkConfig(ABC):
+    """Abstract base class for all Spark configuration classes"""
+
+    @property
+    @abstractmethod
+    def config(self) -> Dict[str, str]:
+        """Return a dictionary of Spark configuration parameters"""
+        pass
+
+
+@dataclass
+class S3FileSystemConfig(SparkConfig):
     """Configuration class for S3 Filesystem settings (security/credential overrides only)"""
 
-    def __init__(
-        self,
-        endpoint: str = None,
-        region: str = None,
-        access_key: Optional[str] = None,
-        secret_key: Optional[str] = None,
-        path_style_access: bool = True,
-        ssl_enabled: bool = False,
-    ):
-        # Security settings (per-app overrides)
-        self.endpoint = endpoint or os.getenv("S3_ENDPOINT", "localhost:9000")
-        self.region = region or os.getenv("AWS_REGION", "us-east-1")
-        self.access_key = access_key or os.getenv("AWS_ACCESS_KEY_ID")
-        self.secret_key = secret_key or os.getenv("AWS_SECRET_ACCESS_KEY")
-        self.path_style_access = path_style_access
-        self.ssl_enabled = ssl_enabled
+    endpoint: str = None
+    region: str = None
+    access_key: Optional[str] = None
+    secret_key: Optional[str] = None
+    path_style_access: bool = True
+    ssl_enabled: bool = False
 
-    def get_spark_configs(self) -> Dict[str, str]:
+    def __post_init__(self):
+        # Security settings (per-app overrides)
+        self.endpoint = self.endpoint or os.getenv("S3_ENDPOINT", "localhost:9000")
+        self.region = self.region or os.getenv("AWS_REGION", "us-east-1")
+        self.access_key = self.access_key or os.getenv("AWS_ACCESS_KEY_ID")
+        self.secret_key = self.secret_key or os.getenv("AWS_SECRET_ACCESS_KEY")
+
+    @property
+    def config(self) -> Dict[str, str]:
         """Get Spark configuration dictionary for S3 Filesystem (security/credential overrides only)"""
         configs = {
             "spark.hadoop.fs.s3a.access.key": self.access_key,
@@ -54,24 +65,18 @@ class S3FileSystemConfig:
         return configs
 
 
-class IcebergConfig:
+@dataclass
+class IcebergConfig(SparkConfig):
     """Configuration class for Iceberg settings"""
 
-    def __init__(
-        self,
-        s3_config: S3FileSystemConfig,
-        catalog_uri: str = "http://iceberg-rest:8181",
-        warehouse: str = "s3://iceberg/wh",
-        catalog_type: str = "rest",
-        catalog: str = "iceberg",
-    ):
-        self.s3_config = s3_config
-        self.catalog_uri = catalog_uri
-        self.warehouse = warehouse
-        self.catalog_type = catalog_type
-        self.catalog = catalog
+    s3_config: S3FileSystemConfig
+    catalog_uri: str = "http://iceberg-rest:8181"
+    warehouse: str = "s3://iceberg/wh"
+    catalog_type: str = "rest"
+    catalog: str = "iceberg"
 
-    def get_spark_configs(self) -> Dict[str, str]:
+    @property
+    def config(self) -> Dict[str, str]:
         """Get Spark configuration dictionary for Iceberg (application-specific only)"""
         configs = {
             # Application-specific Iceberg settings (server-side configs are in spark-defaults.conf)
@@ -97,30 +102,21 @@ class IcebergConfig:
         return configs
 
 
-class PerformanceConfig:
+@dataclass
+class PerformanceConfig(SparkConfig):
     """Configuration class for Spark performance settings"""
 
-    def __init__(
-        self,
-        adaptive_query_execution: bool = True,
-        shuffle_partitions: int = 200,
-        max_partition_bytes: str = "128m",
-        advisory_partition_size: str = "128m",
-        skew_join_enabled: bool = True,
-        skewed_partition_threshold: str = "256m",
-        arrow_pyspark_enabled: bool = True,
-        use_kryo_serializer: bool = False,
-    ):
-        self.adaptive_query_execution = adaptive_query_execution
-        self.shuffle_partitions = shuffle_partitions
-        self.max_partition_bytes = max_partition_bytes
-        self.advisory_partition_size = advisory_partition_size
-        self.skew_join_enabled = skew_join_enabled
-        self.skewed_partition_threshold = skewed_partition_threshold
-        self.arrow_pyspark_enabled = arrow_pyspark_enabled
-        self.use_kryo_serializer = use_kryo_serializer
+    adaptive_query_execution: bool = True
+    shuffle_partitions: int = 200
+    max_partition_bytes: str = "128m"
+    advisory_partition_size: str = "128m"
+    skew_join_enabled: bool = True
+    skewed_partition_threshold: str = "256m"
+    arrow_pyspark_enabled: bool = True
+    use_kryo_serializer: bool = False
 
-    def get_spark_configs(self) -> Dict[str, str]:
+    @property
+    def config(self) -> Dict[str, str]:
         """Get Spark configuration dictionary for performance settings"""
         configs = {
             "spark.sql.adaptive.enabled": str(self.adaptive_query_execution).lower(),
@@ -148,12 +144,70 @@ class PerformanceConfig:
         return configs
 
 
+@dataclass
+class Log4jConfig(SparkConfig):
+    """Configuration class for Log4j2 settings with per-app support"""
+
+    app_name: str = "App"
+    enable_per_app_logging: bool = True
+    log_level: str = "INFO"
+    enable_console_logging: bool = True
+    enable_file_logging: bool = True
+    enable_hybrid_logging: bool = True
+    max_file_size: str = "100MB"
+    max_backup_index: int = 10
+    hybrid_max_file_size: str = "200MB"
+    hybrid_max_backup_index: int = 20
+
+    @property
+    def config(self) -> Dict[str, str]:
+        """Get Spark configuration dictionary for Log4j2 settings"""
+        configs = {}
+
+        if self.enable_per_app_logging:
+            # Determine log directory based on environment
+            if os.path.exists("/opt/bitnami/spark") or os.getenv(
+                "SPARK_HOME", ""
+            ).startswith("/opt/bitnami"):
+                # Docker environment
+                log_dir = f"/opt/bitnami/spark/logs/app/{self.app_name}"
+                app_log_file = f"{log_dir}/{self.app_name}-application.log"
+                hybrid_log_file = f"{log_dir}/{self.app_name}-hybrid-observability.log"
+            else:
+                # Local environment
+                log_dir = f"./spark-logs/app/{self.app_name}"
+                app_log_file = f"{log_dir}/{self.app_name}-application.log"
+                hybrid_log_file = f"{log_dir}/{self.app_name}-hybrid-observability.log"
+
+            # Create log directory
+            os.makedirs(log_dir, exist_ok=True)
+
+            # Set system properties for app-specific log paths (matching log4j2.properties)
+            configs.update(
+                {
+                    "spark.driver.extraJavaOptions": f"-Dspark.app.log.file={app_log_file} -Dspark.hybrid.log.file={hybrid_log_file}",
+                    "spark.executor.extraJavaOptions": f"-Dspark.app.log.file={app_log_file} -Dspark.hybrid.log.file={hybrid_log_file}",
+                }
+            )
+        else:
+            # Use default log4j2 configuration
+            configs.update(
+                {
+                    "spark.driver.extraJavaOptions": "",
+                    "spark.executor.extraJavaOptions": "",
+                }
+            )
+
+        return configs
+
+
 def create_spark_session(
     spark_version: SparkVersion = SparkVersion.SPARK_CONNECT_3_5,
     app_name: Optional[str] = None,
     iceberg_config: Optional[IcebergConfig] = None,
     performance_config: Optional[PerformanceConfig] = None,
     s3_config: Optional[S3FileSystemConfig] = None,
+    log4j_config: Optional[Log4jConfig] = None,
     **additional_configs,
 ) -> SparkSession:
     """
@@ -165,6 +219,7 @@ def create_spark_session(
         iceberg_config: Optional IcebergConfig for Iceberg integration (defaults to Iceberg)
         performance_config: Optional PerformanceConfig for performance tuning
         s3_config: Optional S3FileSystemConfig for S3/MinIO access without Iceberg
+        log4j_config: Optional Log4jConfig for logging configuration
         **additional_configs: Additional Spark configurations (overrides defaults)
 
     Returns:
@@ -175,7 +230,7 @@ def create_spark_session(
         app_name = Path(__file__).stem or "SparkApp"
 
     # Use provided performance config or create a default one
-    if not performance_config:
+    if performance_config is None:
         performance_config = PerformanceConfig()
 
     # If iceberg_config is not provided, use default IcebergConfig
@@ -184,28 +239,22 @@ def create_spark_session(
             s3_config = S3FileSystemConfig()
         iceberg_config = IcebergConfig(s3_config)
 
+    # Create Log4jConfig with the actual app_name
+    if log4j_config is None:
+        log4j_config = Log4jConfig(app_name=app_name)
+    else:
+        # Update the app_name if it's not set correctly
+        if log4j_config.app_name == "App":
+            log4j_config.app_name = app_name
+
     # Start with performance configs (application-specific)
     merged_configs = {
-        **performance_config.get_spark_configs(),
+        **s3_config.config,
+        **iceberg_config.config,
+        **log4j_config.config,
+        **performance_config.config,
         **additional_configs,
     }
-
-    # Add S3A filesystem configs if s3_config is provided
-    if s3_config:
-        merged_configs.update(s3_config.get_spark_configs())
-
-    # Add Iceberg configs (these will be merged with S3A configs)
-    if iceberg_config:
-        merged_configs.update(iceberg_config.get_spark_configs())
-
-    # Add application-specific configurations (not in spark-defaults.conf)
-    app_specific_configs = {
-        # Application-specific settings that can be overridden per app
-        # (server-side defaults are in spark-defaults.conf)
-    }
-
-    # Merge all configurations (additional_configs takes precedence)
-    merged_configs = {**app_specific_configs, **merged_configs}
 
     # Set up event logging (only for regular Spark, not Spark Connect)
     if spark_version not in [
@@ -345,11 +394,11 @@ def create_spark_connect_session(
 
     # Add S3A filesystem configuration if provided
     if s3_config:
-        spark_params.update(s3_config.get_spark_configs())
+        spark_params.update(s3_config.config)
 
     # Add Iceberg configuration if provided
     if iceberg_config:
-        spark_params.update(iceberg_config.get_spark_configs())
+        spark_params.update(iceberg_config.config)
 
     # Add artifacts flag if requested
     if add_artifacts:

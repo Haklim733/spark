@@ -171,22 +171,12 @@ spark = create_spark_session(
     **performance_configs
 )
 ```
-
 ## Environment Variables
 
 The system uses these environment variables for default Iceberg configuration:
 
 - `AWS_ACCESS_KEY_ID`: S3 access key (default: "admin")
 - `AWS_SECRET_ACCESS_KEY`: S3 secret key (default: "password")
-
-## Testing
-
-Run the examples to test the new system:
-
-```bash
-uv run -m src.examples.session_examples
-```
-
 ## Benefits
 
 1. **Type Safety**: Enum prevents invalid version selections
@@ -266,39 +256,12 @@ For a setup that supports both direct S3 operations and Iceberg catalog operatio
 
 **Server-side (spark-defaults.conf)**:
 See the current `spark-defaults.conf` file for complete server-side configuration including:
-- Core Iceberg catalog registration
+- Core Iceberg extension
 - Core S3A filesystem registration
 - Spark Connect settings
 - Performance and resource configurations
 
-**Application-side (session.py)**:
-```python
-from src.utils import S3FileSystemConfig, IcebergConfig, create_spark_session, SparkVersion
-
-# S3 configuration for direct file operations
-s3_config = S3FileSystemConfig(
-    endpoint="minio:9000",
-    access_key="admin",
-    secret_key="password",
-    region="us-east-1"
-)
-
-# Iceberg configuration for catalog operations
-iceberg_config = IcebergConfig(s3_config)
-
-# Create session with both configurations
-spark = create_spark_session(
-    spark_version=SparkVersion.SPARK_CONNECT_3_5,
-    app_name="MyApp",
-    s3_config=s3_config,
-    iceberg_config=iceberg_config
-)
-```
-
-**⚠️ UPDATE**: The new flexible configuration system allows you to set client-side parameters like credentials, endpoints, SSL settings, and catalog configurations per application in `session.py`, providing better multi-user support and application-specific customization.
-
 ## Limitations: Unsupported and Supported Functions in Spark Connect
-
 ### ✅ Fully Supported (work without issues)
 - **Python UDFs**: User-defined functions written in Python are fully supported
 - **DataFrame actions**: `collect()`, `toPandas()`, and `take()` work as expected
@@ -323,7 +286,7 @@ spark = create_spark_session(
 - **RDD operations**: The RDD API is not available in Spark Connect
 - **Custom serialization**: Operations like `map()`, `flatMap()` are not supported
 - **DataFrame transformations with Python lambdas**: e.g., `df.filter(lambda row: ...)` is not supported
-- **Direct SparkContext access**: Not available in Spark Connect architecture
+- **Direct SparkContext access**: Not available in Spark Connect arhitecture
 
 ### 📋 Best Practices for Spark Connect
 1. **Use DataFrame API**: Prefer DataFrame operations over RDD operations

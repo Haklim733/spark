@@ -25,27 +25,17 @@ import json
 from typing import List, Dict, Any, Set
 import uuid
 
-from pyspark.sql import SparkSession
+from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
-    col,
-    lit,
-    sum,
-    count,
-    max as max_func,
-    input_file_name,
-    countDistinct,
     avg,
-    udf,
-    current_timestamp,
-    spark_partition_id,
-    when,
-    get_json_object,
-    from_json,
-    concat_ws,
-    collect_list,
-    regexp_replace,
+    col,
+    count,
+    countDistinct,
+    max as max_func,
     split,
-    size,
+    element_at,
+    when,
+    regexp_extract,
 )
 from pyspark.sql.types import (
     StringType,
@@ -70,25 +60,29 @@ from src.schemas.schema import SchemaManager
 # Initialize SchemaManager
 schema_manager = SchemaManager()
 
-# Cache valid document types to avoid repeated SchemaManager calls
-_VALID_DOCUMENT_TYPES: Set[str] = set()
+# Get schema version from legal_doc_metadata.json using SchemaManager
+schema_dict = schema_manager.get_schema("legal_doc_metadata")
+SCHEMA_VERSION = schema_dict["schema_version"]
 
 
-SCHEMA_VERSION = "v2"
-try:
-    with open(os.path.join(os.path.dirname(__file__), "../schemas/metrics.json")) as f:
-        metrics_schema = json.load(f)
-        SCHEMA_VERSION = metrics_schema.get("schema_version", "v1")
-except Exception:
-    pass
+def extract_document_id_udf(file_path):
+    if not file_path:
+        return "unknown"
+    filename = file_path.split("/")[-1]
+    return filename.replace(".txt", "").replace(".json", "").replace(".parquet", "")
 
 
-def _load_valid_document_types():
-    """Load and cache valid document types once"""
-    global _VALID_DOCUMENT_TYPES
-    if not _VALID_DOCUMENT_TYPES:
-        _VALID_DOCUMENT_TYPES = set(schema_manager.get_document_types())
-    return _VALID_DOCUMENT_TYPES
+def extract_document_type_udf(file_path):
+    if not file_path:
+        return "unknown"
+    filename = file_path.split("/")[-1]
+    parts = (
+        filename.replace(".txt", "")
+        .replace(".json", "")
+        .replace(".parquet", "")
+        .split("_")
+    )
+    return parts[3] if len(parts) >= 4 else "unknown"
 
 
 def is_minio_path(path_str: str) -> bool:
@@ -96,275 +90,125 @@ def is_minio_path(path_str: str) -> bool:
     return path_str.startswith(("s3a://", "s3://", "minio://"))
 
 
-def get_minio_path_info(path_str: str) -> Dict[str, str]:
-    """Parse MinIO path to extract bucket and key information"""
-    if "://" in path_str:
-        path_str = path_str.split("://")[-1]
-    # Split into bucket and key
-    parts = path_str.split("/", 1)
-    if len(parts) == 2:
-        return {"bucket": parts[0], "key": parts[1]}
-    else:
-        return {"bucket": parts[0], "key": ""}
-
-
 def list_minio_files_distributed(
     spark: SparkSession,
     minio_path: str,
-) -> List[str]:
+) -> DataFrame:
     """
     List files in MinIO using distributed DataFrame operations (Spark Connect compatible)
+    Returns a DataFrame with comprehensive file metadata for efficient processing
 
     Args:
         spark: SparkSession for distributed operations
-        minio_path: MinIO path to list files from
+        minio_path: MinIO path to list files from (supports wildcards)
 
     Returns:
-        List[str]: List of file paths found in MinIO
+        DataFrame: DataFrame with file metadata including:
+            - file_path: Full path to the file
+            - file_name: Just the filename
+            - file_extension: File extension (.txt, .json, .parquet)
+            - file_size_bytes: Size in bytes
+            - modification_time_utc: Last modification time
+            - document_id: Extracted document ID from filename
+            - document_type: Extracted document type from path
+            - is_content_file: Boolean indicating if it's a content file
+            - is_metadata_file: Boolean indicating if it's a metadata file
+            - bucket: MinIO bucket name
+            - key: MinIO object key
     """
-    try:
-        print(f"🔍 Listing files in MinIO path: {minio_path}")
-
-        # Spark Connect compatible approach: Use text format instead of binaryFile
-        # This avoids the "path must be absolute" error
-        print(f"📊 Reading file metadata from MinIO using text format...")
-
-        # Method 1: Try using text format to list files (Spark Connect compatible)
-        try:
-            # Use text format which works better with Spark Connect
-            files_df = spark.read.text(minio_path)
-
-            # Get the schema to understand what we're working with
-            schema_fields = files_df.schema.fields
-            print(f"📊 Schema has {len(schema_fields)} fields")
-
-            # Add file path column
-            files_with_paths = files_df.withColumn("file_path", input_file_name())
-
-            # Get distinct file paths
-            distinct_paths = files_with_paths.select("file_path").distinct()
-
-            # Collect the file paths
-            file_paths = distinct_paths.collect()
-            all_files = [row.file_path for row in file_paths]
-
-            print(
-                f"✅ Successfully extracted {len(all_files)} file paths using text format"
-            )
-            return all_files
-
-        except Exception as text_error:
-            print(f"⚠️  Text format method failed: {text_error}")
-
-            # Method 2: Try using CSV format as fallback
-            try:
-                print(f"📊 Trying CSV format as fallback...")
-                files_df = spark.read.csv(minio_path, header=False)
-
-                files_with_paths = files_df.withColumn("file_path", input_file_name())
-                distinct_paths = files_with_paths.select("file_path").distinct()
-                file_paths = distinct_paths.collect()
-                all_files = [row.file_path for row in file_paths]
-
-                print(
-                    f"✅ Successfully extracted {len(all_files)} file paths using CSV format"
-                )
-                return all_files
-
-            except Exception as csv_error:
-                print(f"⚠️  CSV format method failed: {csv_error}")
-
-                # Method 3: Try using JSON format as fallback
-                try:
-                    print(f"📊 Trying JSON format as fallback...")
-                    files_df = spark.read.json(minio_path)
-
-                    files_with_paths = files_df.withColumn(
-                        "file_path", input_file_name()
-                    )
-                    distinct_paths = files_with_paths.select("file_path").distinct()
-                    file_paths = distinct_paths.collect()
-                    all_files = [row.file_path for row in file_paths]
-
-                    print(
-                        f"✅ Successfully extracted {len(all_files)} file paths using JSON format"
-                    )
-                    return all_files
-
-                except Exception as json_error:
-                    print(f"⚠️  JSON format method failed: {json_error}")
-
-                    # Method 4: Try using Parquet format as fallback
-                    try:
-                        print(f"📊 Trying Parquet format as fallback...")
-                        files_df = spark.read.parquet(minio_path)
-
-                        files_with_paths = files_df.withColumn(
-                            "file_path", input_file_name()
-                        )
-                        distinct_paths = files_with_paths.select("file_path").distinct()
-                        file_paths = distinct_paths.collect()
-                        all_files = [row.file_path for row in file_paths]
-
-                        print(
-                            f"✅ Successfully extracted {len(all_files)} file paths using Parquet format"
-                        )
-                        return all_files
-
-                    except Exception as parquet_error:
-                        print(f"⚠️  Parquet format method failed: {parquet_error}")
-
-                        # Method 5: Try using ORC format as fallback
-                        try:
-                            print(f"📊 Trying ORC format as fallback...")
-                            files_df = spark.read.orc(minio_path)
-
-                            files_with_paths = files_df.withColumn(
-                                "file_path", input_file_name()
-                            )
-                            distinct_paths = files_with_paths.select(
-                                "file_path"
-                            ).distinct()
-                            file_paths = distinct_paths.collect()
-                            all_files = [row.file_path for row in file_paths]
-
-                            print(
-                                f"✅ Successfully extracted {len(all_files)} file paths using ORC format"
-                            )
-                            return all_files
-
-                        except Exception as orc_error:
-                            print(f"⚠️  ORC format method failed: {orc_error}")
-
-                            # Method 6: Try using binaryFile with absolute path workaround
-                            try:
-                                print(f"📊 Trying binaryFile with path workaround...")
-                                # Try to make the path more explicit for Spark Connect
-                                if minio_path.startswith("s3a://"):
-                                    # Ensure the path ends with /* for listing
-                                    if not minio_path.endswith("*"):
-                                        if minio_path.endswith("/"):
-                                            minio_path = minio_path + "*"
-                                        else:
-                                            minio_path = minio_path + "/*"
-
-                                files_df = spark.read.format("binaryFile").load(
-                                    minio_path
-                                )
-                                file_paths = files_df.select("path").collect()
-                                all_files = [row.path for row in file_paths]
-
-                                print(
-                                    f"✅ Successfully extracted {len(all_files)} file paths using binaryFile with workaround"
-                                )
-                                return all_files
-
-                            except Exception as binary_error:
-                                print(f"⚠️  All file listing methods failed")
-                                print(
-                                    f"❌ Error listing MinIO files with Spark: {binary_error}"
-                                )
-                                return []
-
-    except Exception as e:
-        print(f"❌ Error listing MinIO files with Spark: {e}")
-        return []
-
-
-def list_minio_files_direct(minio_path: str) -> List[str]:
-    """List files using Spark's distributed filesystem operations"""
-    # This function is now deprecated in favor of list_minio_files_distributed
-    # which uses Spark's distributed operations instead of direct MinIO client
-    print(
-        f"⚠️  list_minio_files_direct is deprecated. Use Spark's distributed operations instead."
+    # Read files using binaryFile format for metadata
+    files_df = spark.read.format("binaryFile").load(minio_path)
+    listed_files_df = (
+        files_df.withColumn("file_path", col("path"))
+        .withColumn(
+            # Extract document_type: it's the segment after 'legal/' and before the date folder
+            # Path structure: s3a://raw/docs/legal/{document_type}/{date}/{content|metadata}/{filename}
+            "document_type",
+            regexp_extract(
+                col("file_path"), r"s3a:\/\/raw\/docs\/legal\/([^\/]+)\/", 1
+            ),
+        )
+        .withColumn(
+            # Extract date folder: it's the segment after document_type and before content/metadata
+            "doc_date_folder",
+            regexp_extract(
+                col("file_path"), r"s3a:\/\/raw\/docs\/legal\/[^\/]+\/([^\/]+)\/", 1
+            ),
+        )
+        .withColumn(
+            # Extract the direct parent folder (e.g., 'content' or 'metadata')
+            "subfolder",
+            regexp_extract(
+                col("file_path"), r"\/([^\/]+)\/[^\/]+$", 1
+            ),  # Captures folder before filename
+        )
+        .withColumn(
+            # Extract filename with extension
+            "filename_with_ext",
+            element_at(split(col("file_path"), "/"), -1),
+        )
+        .withColumn(
+            # Extract document_id (filename without extension)
+            "document_id",
+            regexp_extract(col("filename_with_ext"), r"^(.+?)(?:\.[^.]*$|$)", 1),
+        )
+        .withColumn(
+            # Extract file_extension
+            "file_extension",
+            regexp_extract(col("filename_with_ext"), r"(?<=\.)([^.]*)$", 1),
+        )
+        .withColumn(
+            "is_content_file",
+            when(col("file_path").contains("/content/"), True).otherwise(False),
+        )
+        .withColumn(
+            "is_metadata_file",
+            when(col("file_path").contains("/metadata/"), True).otherwise(False),
+        )
+        .select(
+            "file_path",
+            "document_type",
+            "doc_date_folder",
+            "subfolder",
+            "document_id",
+            "file_extension",
+            "is_content_file",
+            "is_metadata_file",
+            col("modificationTime").alias("modification_time_utc"),
+            col("length").alias("file_size_bytes"),
+        )
     )
-    return []
+
+    print("\nListed Files with Extracted Document Type and Other Details:")
+    # listed_files_df.show(truncate=False)
+    # listed_files_df.printSchema()
+
+    # Cache the DataFrame for efficient reuse
+    listed_files_df.cache()
+
+    file_count = listed_files_df.count()
+    print(f" Found {file_count} files with comprehensive metadata")
+
+    return listed_files_df
 
 
-def read_minio_file_content(spark: SparkSession, file_path: str) -> str:
+def read_file_content(spark: SparkSession, file_path: str) -> str:
     """Read content from a MinIO file using Spark's distributed filesystem"""
-    try:
-        # Use Spark's text reading with S3A filesystem
-        df = spark.read.text(file_path)
+    df = spark.read.text(file_path)
 
-        # Collect all lines and join them
-        lines = df.collect()
-        content = "\n".join([row.value for row in lines])
+    lines = df.collect()
+    content = "\n".join([row.value for row in lines])
 
-        return content
-
-    except Exception as e:
-        print(f"❌ Error reading MinIO file {file_path}: {e}")
-        return ""
+    return content
 
 
 def get_minio_file_size(spark: SparkSession, file_path: str) -> int:
     """Get file size from MinIO using Spark's distributed filesystem"""
-    try:
-        # Method 1: Try using binaryFile format for metadata
-        try:
-            df = spark.read.format("binaryFile").load(file_path)
-            row = df.first()
-            if row and hasattr(row, "length") and row.length is not None:
-                file_size = row.length
-                return file_size
-        except Exception as binary_error:
-            pass
-
-        # Method 2: Try using text format and count characters (Spark Connect compatible)
-        try:
-            df = spark.read.text(file_path)
-            # Count total characters across all lines
-            char_count = df.selectExpr("SUM(LENGTH(value)) as total_chars").collect()[
-                0
-            ]["total_chars"]
-            if char_count is not None:
-                # Add some overhead for line endings and encoding
-                estimated_size = char_count + (df.count() * 2)  # Rough estimate
-                return estimated_size
-        except Exception as text_error:
-            pass
-
-        # Method 3: Simple approach - read content and measure (Spark Connect compatible)
-        try:
-            content = read_minio_file_content(spark, file_path)
-            if content:
-                file_size = len(content.encode("utf-8"))
-                return file_size
-        except Exception as content_error:
-            pass
-
-        # Method 4: Fallback - estimate based on file path (Spark Connect compatible)
-        try:
-            # Try to get a rough estimate by reading a small sample
-            df = spark.read.text(file_path).limit(10)
-            sample_lines = df.collect()
-            if sample_lines:
-                sample_content = "\n".join([row.value for row in sample_lines])
-                sample_size = len(sample_content.encode("utf-8"))
-                # Estimate total size based on sample (rough approximation)
-                estimated_size = max(sample_size * 100, 1024)  # At least 1KB
-                return estimated_size
-        except Exception as sample_error:
-            pass
-
-        # Method 5: Ultra-simple fallback for authentication issues
-        try:
-            # Just try to read the first line to see if we can access the file at all
-            df = spark.read.text(file_path).limit(1)
-            first_line = df.collect()
-            if first_line:
-                # If we can read at least one line, estimate a reasonable size
-                estimated_size = 2048  # 2KB as a reasonable default
-                return estimated_size
-        except Exception as access_error:
-            pass
-
-        return 1024  # Return 1KB as fallback instead of 0
-
-    except Exception as e:
-        print(f"❌ Error getting file size for {file_path}: {e}")
-        return 1024  # Return 1KB as fallback instead of 0
+    df = spark.read.format("binaryFile").load(file_path)
+    row = df.first()
+    if row and hasattr(row, "length") and row.length is not None:
+        file_size = row.length
+        return file_size
 
 
 def basic_load_validation(
@@ -559,13 +403,6 @@ def get_failed_loads(
     """
     try:
         # Use DataFrame API for better Spark Connect performance
-        from pyspark.sql.functions import (
-            col,
-            count,
-            countDistinct,
-            avg,
-            max as max_func,
-        )
 
         # Load table as DataFrame
         table_df = spark.table(table_name)
@@ -700,258 +537,11 @@ def validate_batch_load(
         return None
 
 
-def process_files_with_content_distributed(
-    spark: SparkSession, minio_path: str, table_name: str, batch_id: str
-):
-    """Process files with content using distributed operations (now works!)"""
-    try:
-        print(f"🔄 Starting enhanced content processing from: {minio_path}")
-        text_df = spark.read.text(minio_path)
-        files_with_content_df = text_df.withColumn("file_path", input_file_name())
-        aggregated_df = files_with_content_df.groupBy("file_path").agg(
-            collect_list("value").alias("content_lines"),
-            regexp_replace(
-                split(col("file_path"), "/")[size(split(col("file_path"), "/")) - 1],
-                "\\.txt$",
-                "",
-            ).alias("document_id"),
-            split(col("file_path"), "/")[2].alias("document_type"),
-        )
-        final_df = aggregated_df.select(
-            col("document_id"),
-            col("document_type"),
-            concat_ws("\n", col("content_lines")).alias("raw_text"),
-            col("file_path"),
-            lit("en").alias("language"),
-            lit("").alias("generated_at"),
-            col("file_path").alias("source"),
-            lit(0).alias("file_size"),
-            lit("distributed").alias("method"),
-            lit("").alias("metadata_file_path"),
-            lit("loaded").alias("load_status"),
-            lit(None).alias("load_error"),
-            lit(batch_id).alias("load_batch_id"),
-            lit(str(datetime.now(timezone.utc))).alias("load_timestamp"),
-        )
-        # Use DataFrame API for insertion instead of SQL
-        final_df.writeTo(table_name).append()
-        print(f"✅ Enhanced content processing completed with distributed operations")
-        return True
-    except Exception as e:
-        print(f"❌ Error in enhanced content processing: {e}")
-        return False
-
-
-def read_minio_files_distributed(
-    spark: SparkSession,
-    minio_path: str,
-    table_name: str,
-    batch_id: str,
-) -> bool:
-    """
-    Read and process MinIO files using distributed operations (now works!)
-
-    Args:
-        spark: SparkSession for distributed operations
-        minio_path: MinIO path to read files from
-        table_name: Target table name for insertion
-        batch_id: Unique batch identifier
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    try:
-        print(f"🔄 Starting enhanced file processing from: {minio_path}")
-        print(f"📊 Target table: {table_name}")
-        print(f"🆔 Batch ID: {batch_id}")
-
-        # Step 1: Load file metadata using binaryFile format (this works in Spark Connect)
-        files_df = spark.read.format("binaryFile").load(minio_path)
-        files_df.createOrReplaceTempView("minio_files_metadata")
-
-        # Step 2: Use DataFrame API for better Spark Connect performance
-
-        # Filter and aggregate using DataFrame API
-        file_info_df = (
-            files_df.filter((col("isDirectory") == False) & col("path").like("%.txt"))
-            .groupBy("path", "length", "modificationTime")
-            .agg(count("*").alias("file_count"))
-            .withColumnRenamed("length", "file_size")
-            .withColumnRenamed("modificationTime", "mod_time")
-            .orderBy(col("file_size").desc())
-        )
-
-        # Step 3: Simple UDFs for data transformation
-
-        def extract_document_id(file_path):
-            """Extract document ID from file path"""
-            if not file_path:
-                return "unknown"
-            filename = file_path.split("/")[-1]
-            return filename.replace(".txt", "")
-
-        def extract_document_type(file_path):
-            """Extract document type from file path"""
-            if not file_path:
-                return "unknown"
-            filename = file_path.split("/")[-1]
-            parts = filename.replace(".txt", "").split("_")
-            return parts[3] if len(parts) >= 4 else "unknown"
-
-        # Register UDFs
-        extract_id_udf = udf(extract_document_id, StringType())
-        extract_type_udf = udf(extract_document_type, StringType())
-
-        # Step 4: Apply transformations with GROUP BY (now works!)
-        final_df = file_info_df.select(
-            extract_id_udf(col("path")).alias("document_id"),
-            extract_type_udf(col("path")).alias("document_type"),
-            lit("").alias("raw_text"),  # Content will be handled separately
-            col("path").alias("file_path"),
-            col("file_size"),
-            lit(batch_id).alias("load_batch_id"),
-            lit(str(datetime.now(timezone.utc))).alias("load_timestamp"),
-            lit("loaded").alias("load_status"),
-            lit(None).alias("load_error"),
-        )
-
-        # Step 5: Insert using DataFrame API
-        final_df.writeTo(table_name).append()
-
-        print(f"✅ Enhanced file processing completed with distributed operations")
-        return True
-
-    except Exception as e:
-        print(f"❌ Error in enhanced file processing: {e}")
-        return False
-
-
-def process_files_distributed_spark_connect(
-    spark: SparkSession,
-    minio_path: str,
-    table_name: str,
-    batch_id: str,
-) -> bool:
-    """
-    Process files using Spark Connect distributed operations
-
-    Args:
-        spark: SparkSession for distributed operations
-        minio_path: MinIO path to process files from
-        table_name: Target table name for insertion
-        batch_id: Unique batch identifier
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    try:
-        print(f"🔄 Starting enhanced file processing from: {minio_path}")
-        print(f"📊 Target table: {table_name}")
-        print(f"🆔 Batch ID: {batch_id}")
-
-        # Step 1: Load file metadata using binaryFile format
-        # This operation is distributed and parallel by default
-        files_df = spark.read.format("binaryFile").load(minio_path)
-
-        # Step 2: Filter for text files using DataFrame operations
-        # This is also distributed and parallel
-        text_files_df = files_df.filter(
-            (files_df.isDirectory == False) & (files_df.path.like("%.txt"))
-        )
-
-        # Step 3: Use GROUP BY with aggregations (now works!)
-        # This will group files by path and aggregate metadata
-        grouped_files = text_files_df.groupBy("path").agg(
-            col("length").alias("file_size"), col("modificationTime").alias("mod_time")
-        )
-
-        # Step 4: Simple UDFs for data transformation
-
-        def extract_document_id(file_path):
-            """Extract document ID from file path"""
-            if not file_path:
-                return "unknown"
-            filename = file_path.split("/")[-1]
-            return filename.replace(".txt", "")
-
-        def extract_document_type(file_path):
-            """Extract document type from file path"""
-            if not file_path:
-                return "unknown"
-            filename = file_path.split("/")[-1]
-            parts = filename.replace(".txt", "").split("_")
-            return parts[3] if len(parts) >= 4 else "unknown"
-
-        # Register UDFs
-        extract_id_udf = udf(extract_document_id, StringType())
-        extract_type_udf = udf(extract_document_type, StringType())
-
-        # Step 5: Apply transformations using distributed operations
-        final_df = grouped_files.select(
-            extract_id_udf(col("path")).alias("document_id"),
-            extract_type_udf(col("path")).alias("document_type"),
-            lit("").alias("raw_text"),  # Content will be handled separately
-            col("path").alias("file_path"),
-            col("file_size"),
-            lit(batch_id).alias("load_batch_id"),
-            lit(str(datetime.now(timezone.utc))).alias("load_timestamp"),
-            lit("loaded").alias("load_status"),
-            lit(None).alias("load_error"),
-        )
-
-        # Step 6: Insert using DataFrame API
-        final_df.writeTo(table_name).append()
-
-        print(f"✅ Enhanced file processing completed with distributed operations")
-        return True
-
-    except Exception as e:
-        print(f"❌ Error in enhanced file processing: {e}")
-        return False
-
-
-def insert_stream(
-    spark: SparkSession,
-    stream_source: str,
-    table_name: str,
-    batch_id: str = None,
-    stream_config: Dict[str, Any] = None,
-) -> bool:
-    """
-    Insert data from a streaming source
-
-    Args:
-        spark: SparkSession for streaming operations
-        stream_source: Source for streaming data
-        table_name: Target table name
-        batch_id: Unique batch identifier (auto-generated if None)
-        stream_config: Configuration for streaming (optional)
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    if batch_id is None:
-        batch_id = f"stream_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
-
-    print(f"🔄 Starting stream processing from {stream_source} into {table_name}")
-    print(f"Stream ID: {batch_id}")
-
-    # Default stream configuration
-    if stream_config is None:
-        stream_config = {
-            "trigger_interval": "30 seconds",  # Micro-batch interval
-            "checkpoint_location": "/tmp/stream_checkpoints",
-            "max_offsets_per_trigger": 1000,  # Max messages per batch
-            "fail_on_data_loss": False,  # Continue on data loss
-        }
-    raise NotImplementedError("Streaming processing not yet implemented")
-
-
 def insert_files(
     spark: SparkSession,
     docs_dir: str,
     table_name: str,
-    observability_logger: HybridLogger,  # Required - no longer optional
+    observability_logger: HybridLogger,
 ) -> Dict[str, Any]:
     """
     Spark-native file insertion function with partition tracking
@@ -971,67 +561,58 @@ def insert_files(
     Raises:
         ValueError: If required parameters are missing
     """
-    # Validate required parameters
-    if spark is None:
-        raise ValueError("❌ Spark session is required")
-    if observability_logger is None:
-        raise ValueError(
-            "❌ Observability logger is required for metrics and monitoring"
-        )
 
     print(f"🔄 Spark-native: Loading files from {docs_dir} into {table_name}")
 
+    # Generate job_id and batch_id for tracking
+    job_id = generate_job_id()
+    batch_id = f"batch_{int(time.time())}"
+
     # Check if this is a MinIO path
     is_minio = is_minio_path(docs_dir)
-    source_type = "minio" if is_minio else "local"
+
+    # Filter for supported extensions
+    supported_extensions = [".txt", ".json", ".parquet"]
+    content_files = []
+    metadata_files = []
 
     if is_minio:
-        print(f"🔗 Detected MinIO path: {docs_dir}")
-        # List files from MinIO using the working distributed approach
-        if spark is not None:
-            print("📋 Listing MinIO files with distributed Spark approach...")
-            try:
-                # Use the working list_minio_files_distributed function
-                all_files = list_minio_files_distributed(spark, docs_dir)
+        # List files from MinIO using the enhanced distributed approach
+        print("📋 Listing MinIO files with comprehensive metadata...")
 
-                # Filter for supported extensions
-                supported_extensions = [".txt", ".json", ".parquet"]
-                filtered_files = []
+        files_metadata_df = list_minio_files_distributed(spark, docs_dir)
 
-                for file_path in all_files:
-                    if any(file_path.endswith(ext) for ext in supported_extensions):
-                        filtered_files.append(file_path)
-
-                all_files = filtered_files
-                print(f"Found {len(all_files)} supported files in MinIO")
-
-                if not all_files:
-                    print(f"⚠️  No supported files found in MinIO path: {docs_dir}")
-                    print(f"Supported formats: {', '.join(supported_extensions)}")
-                    observability_logger.log_error(
-                        Exception(
-                            f"No supported files found in MinIO path: {docs_dir}"
-                        ),
-                        {"error_type": "NO_SUPPORTED_FILES"},
-                    )
-                    return False
-
-            except Exception as e:
-                print(f"❌ Error accessing MinIO path {docs_dir}: {e}")
-                observability_logger.log_error(
-                    Exception(f"Error accessing MinIO path {docs_dir}: {e}"),
-                    {"error_type": "MINIO_ACCESS_ERROR"},
-                )
-                return False
-        else:
-            print("❌ Spark session required for MinIO access")
+        if files_metadata_df.count() == 0:
+            print(f"❌ No files found in path {docs_dir}")
             observability_logger.log_error(
-                Exception("Spark session required for MinIO access"),
-                {"error_type": "CONFIGURATION_ERROR"},
+                Exception(f"No files found in MinIO path: {docs_dir}"),
+                {"error_type": "NO_FILES_FOUND"},
+            )
+            raise Exception("no files not found")
+
+        # Filter files by type using the metadata DataFrame
+        content_files_df = files_metadata_df.filter(col("is_content_file") == True)
+        metadata_files_df = files_metadata_df.filter(col("is_metadata_file") == True)
+
+        # Convert to lists for backward compatibility
+        content_files = [row.file_path for row in content_files_df.collect()]
+        metadata_files = [row.file_path for row in metadata_files_df.collect()]
+
+        print(
+            f"Found {len(content_files)} content files and {len(metadata_files)} metadata files in MinIO"
+        )
+
+        if not content_files:
+            print(f"⚠️  No content files found in MinIO path: {docs_dir}")
+            print(f"Supported formats: {', '.join(supported_extensions)}")
+            observability_logger.log_error(
+                Exception(f"No content files found in MinIO path: {docs_dir}"),
+                {"error_type": "NO_CONTENT_FILES"},
             )
             return False
+
     else:
-        # Local filesystem processing
+        # Local filesystem processing (unchanged)
         if not os.path.exists(docs_dir):
             print(f"⚠️  Directory not found: {docs_dir}")
             observability_logger.log_error(
@@ -1040,65 +621,90 @@ def insert_files(
             )
             return False
 
-        # Get list of all supported files
-        supported_extensions = [".txt", ".json", ".parquet"]
-        all_files = []
+        # Look for content and metadata directories
+        content_dir = Path(docs_dir) / "content"
+        metadata_dir = Path(docs_dir) / "metadata"
 
-        for ext in supported_extensions:
-            all_files.extend(list(Path(docs_dir).glob(f"*{ext}")))
-            all_files.extend(
-                list(Path(docs_dir).glob(f"**/*{ext}"))
-            )  # Include subdirectories
+        # Process content files
+        if content_dir.exists():
+            # New structure with content/metadata directories
+            for ext in supported_extensions:
+                content_files.extend(list(content_dir.glob(f"*{ext}")))
+                content_files.extend(
+                    list(content_dir.glob(f"**/*{ext}"))
+                )  # Include subdirectories
 
-        if not all_files:
-            print(f"⚠️  No supported files found in: {docs_dir}")
+            # Process metadata files
+            if metadata_dir.exists():
+                for ext in [".json"]:  # Metadata files are typically JSON
+                    metadata_files.extend(list(metadata_dir.glob(f"*{ext}")))
+                    metadata_files.extend(list(metadata_dir.glob(f"**/*{ext}")))
+        else:
+            # Legacy structure - look for files directly in docs_dir
+            for ext in supported_extensions:
+                content_files.extend(list(Path(docs_dir).glob(f"*{ext}")))
+                content_files.extend(list(Path(docs_dir).glob(f"**/*{ext}")))
+
+        if not content_files:
+            print(f"⚠️  No content files found in: {docs_dir}")
             print(f"Supported formats: {', '.join(supported_extensions)}")
             observability_logger.log_error(
-                Exception(f"No supported files found in: {docs_dir}"),
-                {"error_type": "NO_SUPPORTED_FILES"},
+                Exception(f"No content files found in: {docs_dir}"),
+                {"error_type": "NO_CONTENT_FILES"},
             )
             return False
 
-        print(f"Found {len(all_files)} files")
+        print(
+            f"Found {len(content_files)} content files and {len(metadata_files)} metadata files"
+        )
 
-    # Group files by format
+    # Group content files by format
     file_groups = {
         "text": [
             f
-            for f in all_files
+            for f in content_files
             if f.endswith(".txt") or (hasattr(f, "suffix") and f.suffix == ".txt")
         ],
         "json": [
             f
-            for f in all_files
+            for f in content_files
             if f.endswith(".json") or (hasattr(f, "suffix") and f.suffix == ".json")
         ],
         "parquet": [
             f
-            for f in all_files
+            for f in content_files
             if f.endswith(".parquet")
             or (hasattr(f, "suffix") and f.suffix == ".parquet")
         ],
     }
 
-    print(f"File breakdown:")
+    print(f"Content file breakdown:")
     for format_type, files in file_groups.items():
         if files:
             print(f"   - {format_type}: {len(files)} files")
 
-    # Note: In ELT approach, we don't truncate - we append all data
+    if metadata_files:
+        print(f"Metadata files: {len(metadata_files)} files")
+
+    # Note: In ELT approach, we don't truncate - we append all data or merge update
     # Data deduplication and cleanup happens in Transform layer
     print(f"📝 ELT: Appending data to {table_name} (no truncation)")
 
-    # Start operation tracking for the main insert_files operation
     observability_logger.start_operation("main_processing", "insert_files")
 
-    # Record job start time for duration calculation
     job_start_time = time.time()
 
     # Process files with partition tracking
+    # Pass the metadata DataFrame for efficient file size lookups
     result = _insert_files_with_partition_tracking(
-        spark, file_groups, table_name, observability_logger
+        spark,
+        file_groups,
+        table_name,
+        observability_logger,
+        metadata_files,
+        files_metadata_df if is_minio else None,
+        job_id,  # Pass job_id from main
+        batch_id,  # Pass batch_id from main
     )
 
     # Calculate job duration
@@ -1106,7 +712,7 @@ def insert_files(
 
     # Store source files for job logging
     # Convert file paths to strings for consistent handling
-    source_files_list = [str(f) for f in all_files]
+    source_files_list = [str(f) for f in content_files]
 
     # Store in spark session for later retrieval
     if hasattr(spark, "source_files"):
@@ -1267,11 +873,515 @@ def insert_files(
     }
 
 
+def _process_content_files(
+    spark: SparkSession,
+    content_files: List[str],
+    metadata_lookup: Dict[str, Any],
+    batch_timestamp: datetime,
+    files_metadata_df: DataFrame = None,  # Add this parameter
+    job_id: str = None,  # Add job_id parameter
+    batch_id: str = None,  # Add batch_id parameter
+) -> Dict[str, Any]:
+    """
+    Process content files and create DataFrame for insertion
+
+    Args:
+        spark: SparkSession for data processing
+        content_files: List of content file paths
+        metadata_lookup: Dictionary of metadata by document ID
+        batch_timestamp: Timestamp for the batch
+        files_metadata_df: DataFrame with file metadata (optional)
+        job_id: Job identifier for tracking
+        batch_id: Batch identifier for tracking
+
+    Returns:
+        Dict[str, Any]: Processing results with DataFrame and counts
+    """
+    print(f"📄 Processing {len(content_files)} content files")
+
+    # Group files by type for efficient processing
+    text_files = [f for f in content_files if str(f).endswith(".txt")]
+    json_files = [f for f in content_files if str(f).endswith(".json")]
+    parquet_files = [f for f in content_files if str(f).endswith(".parquet")]
+
+    successful_inserts = 0
+    failed_inserts = 0
+    all_dataframes = []
+
+    # Process text files
+    if text_files:
+        text_df = _process_text_files(
+            spark,
+            text_files,
+            metadata_lookup,
+            batch_timestamp,
+            files_metadata_df,
+            job_id,
+            batch_id,
+        )
+        if text_df:
+            all_dataframes.append(text_df)
+            successful_inserts += len(text_files)
+        else:
+            failed_inserts += len(text_files)
+
+    # Process JSON files
+    if json_files:
+        json_df = _process_json_files(
+            spark, json_files, metadata_lookup, batch_timestamp, job_id, batch_id
+        )
+        if json_df:
+            all_dataframes.append(json_df)
+            successful_inserts += len(json_files)
+        else:
+            failed_inserts += len(json_files)
+
+    # Process Parquet files
+    if parquet_files:
+        parquet_df = _process_parquet_files(
+            spark, parquet_files, metadata_lookup, batch_timestamp, job_id, batch_id
+        )
+        if parquet_df:
+            all_dataframes.append(parquet_df)
+            successful_inserts += len(parquet_files)
+        else:
+            failed_inserts += len(parquet_files)
+
+    return {
+        "successful_inserts": successful_inserts,
+        "failed_inserts": failed_inserts,
+        "dataframes": all_dataframes,
+    }
+
+
+def _process_metadata_files(
+    spark: SparkSession,
+    metadata_files: List[str],
+) -> Dict[str, Any]:
+    """
+    Process metadata files and create lookup dictionary
+
+    Args:
+        spark: SparkSession for data processing
+        metadata_files: List of metadata file paths
+
+    Returns:
+        Dict[str, Any]: Metadata lookup dictionary
+    """
+    print(f"📋 Processing {len(metadata_files)} metadata files")
+
+    metadata_lookup = {}
+
+    for metadata_file in metadata_files:
+        try:
+            # Extract document_id from metadata filename
+            metadata_path = Path(metadata_file)
+            doc_id = metadata_path.stem  # Remove .json extension
+
+            # Read metadata content
+            if is_minio_path(metadata_file):
+                # For MinIO files, use Spark to read
+                metadata_content = read_file_content(spark, metadata_file)
+                if metadata_content:
+                    import json
+
+                    metadata_data = json.loads(metadata_content)
+                    metadata_lookup[doc_id] = metadata_data
+            else:
+                # For local files, read directly
+                with open(metadata_file, "r", encoding="utf-8") as f:
+                    import json
+
+                    metadata_data = json.load(f)
+                    metadata_lookup[doc_id] = metadata_data
+
+        except Exception as e:
+            print(f"⚠️ Error reading metadata file {metadata_file}: {e}")
+            continue
+
+    return metadata_lookup
+
+
+def _process_text_files(
+    spark: SparkSession,
+    text_files: List[str],
+    metadata_lookup: Dict[str, Any],
+    batch_timestamp: datetime,
+    files_metadata_df: DataFrame = None,
+    job_id: str = None,
+    batch_id: str = None,
+) -> Any:
+    """Process text files and return DataFrame"""
+    print(f"📄 Processing {len(text_files)} text files")
+
+    # Generate job_id and batch_id if not provided
+    if job_id is None:
+        job_id = generate_job_id()
+    if batch_id is None:
+        batch_id = f"batch_{int(batch_timestamp.timestamp())}"
+
+    # Create DataFrame rows with proper type conversion
+    text_rows = []
+    for i, file_path in enumerate(text_files):
+        file_str = str(file_path)
+
+        # Use metadata DataFrame if available, otherwise fallback to path parsing
+        if files_metadata_df is not None:
+            # Get metadata from the DataFrame
+            file_metadata_row = files_metadata_df.filter(
+                col("file_path") == file_str
+            ).first()
+            if file_metadata_row:
+                doc_id = file_metadata_row.document_id
+                doc_type = file_metadata_row.document_type
+            else:
+                # Fallback to path parsing
+                path = Path(file_path)
+                doc_id = path.stem
+                path_parts = file_str.split("/docs/legal/")
+                doc_type = (
+                    path_parts[1].split("/")[0] if len(path_parts) > 1 else "legal"
+                )
+        else:
+            # Fallback to original path parsing logic
+            path = Path(file_path)
+            doc_id = path.stem
+            path_parts = file_str.split("/docs/legal/")
+            doc_type = path_parts[1].split("/")[0] if len(path_parts) > 1 else "legal"
+
+        # Get additional metadata
+        doc_metadata = metadata_lookup.get(doc_id, {})
+        source = doc_metadata.get("source", "soli_legal_document_generator")
+        language = doc_metadata.get("language", "en")
+        file_size = doc_metadata.get("file_size", 0)
+        generated_at_str = doc_metadata.get("generated_at", "")
+
+        # Parse generated_at
+        if generated_at_str:
+            try:
+                if generated_at_str.endswith("Z"):
+                    generated_at = datetime.fromisoformat(
+                        generated_at_str.replace("Z", "+00:00")
+                    )
+                else:
+                    generated_at = datetime.fromisoformat(generated_at_str)
+            except:
+                generated_at = batch_timestamp
+        else:
+            generated_at = batch_timestamp
+
+        # Build metadata file path
+        metadata_file_path = file_str.replace("/content/", "/metadata/").replace(
+            ".txt", ".json"
+        )
+
+        # Read actual file content
+        try:
+            if is_minio_path(file_str):
+                # For MinIO files, use Spark to read content
+                raw_text = read_file_content(spark, file_str)
+            else:
+                # For local files, read directly
+                with open(file_str, "r", encoding="utf-8") as f:
+                    raw_text = f.read()
+        except Exception as e:
+            print(f"⚠️ Error reading file content for {file_str}: {e}")
+            raw_text = ""  # Empty content if reading fails
+
+        # Ensure all values are properly typed
+        text_rows.append(
+            (
+                str(doc_id),  # Ensure string
+                str(doc_type),  # Ensure string - now uses DataFrame metadata
+                generated_at,  # Already datetime
+                str(source),  # Ensure string
+                str(language),  # Ensure string
+                int(file_size) if file_size is not None else 0,  # Ensure int
+                "spark_text_reader",  # Already string
+                str(SCHEMA_VERSION),  # Ensure string
+                str(metadata_file_path),  # Ensure string
+                raw_text,  # Actual file content instead of "text_content"
+                str(file_str),  # Already string
+                batch_id,  # Use provided batch_id
+                job_id,  # Use provided job_id
+            )
+        )
+
+    if text_rows:
+        # Define explicit schema to avoid type conversion issues
+        from pyspark.sql.types import (
+            StructType,
+            StructField,
+            StringType,
+            TimestampType,
+            IntegerType,
+        )
+
+        schema = StructType(
+            [
+                StructField("document_id", StringType(), True),
+                StructField("document_type", StringType(), True),
+                StructField("generated_at", TimestampType(), True),
+                StructField("source", StringType(), True),
+                StructField("language", StringType(), True),
+                StructField("file_size", IntegerType(), True),
+                StructField("method", StringType(), True),
+                StructField("schema_version", StringType(), True),
+                StructField("metadata_file_path", StringType(), True),
+                StructField("raw_text", StringType(), True),
+                StructField("file_path", StringType(), True),
+                StructField("batch_id", StringType(), True),
+                StructField("job_id", StringType(), True),
+            ]
+        )
+
+        return spark.createDataFrame(text_rows, schema)
+    return None
+
+
+def _process_json_files(
+    spark: SparkSession,
+    json_files: List[str],
+    metadata_lookup: Dict[str, Any],
+    batch_timestamp: datetime,
+    job_id: str = None,  # Add job_id parameter
+    batch_id: str = None,  # Add batch_id parameter
+) -> Any:
+    """Process JSON files and return DataFrame"""
+    print(f"📄 Processing {len(json_files)} JSON files")
+
+    # Similar processing as text files but for JSON
+    file_metadata = {}
+    for file_path in json_files:
+        path = Path(file_path)
+        doc_id = path.stem
+        file_str = path.as_posix()
+
+        path_parts = file_str.split("/")
+        doc_type = "legal"
+
+        if len(path_parts) >= 4:
+            for i, part in enumerate(path_parts):
+                if (
+                    part == "docs"
+                    and i + 1 < len(path_parts)
+                    and path_parts[i + 1] == "legal"
+                ):
+                    if i + 2 < len(path_parts):
+                        potential_doc_type = path_parts[i + 2]
+                        if potential_doc_type in [
+                            "contract",
+                            "memo",
+                            "filing",
+                            "legal_memo",
+                            "court_filing",
+                            "policy_document",
+                            "legal_opinion",
+                        ]:
+                            doc_type = potential_doc_type
+                            break
+
+        file_metadata[file_str] = {"doc_id": doc_id, "doc_type": doc_type}
+
+    json_rows = []
+    for i, file_path in enumerate(json_files):
+        file_str = str(file_path)
+        metadata = file_metadata.get(
+            file_str, {"doc_id": f"json_doc_{i}", "doc_type": "legal"}
+        )
+
+        doc_id = metadata["doc_id"]
+        doc_type = metadata["doc_type"]
+
+        doc_metadata = metadata_lookup.get(doc_id, {})
+        source = doc_metadata.get("source", "soli_legal_document_generator")
+        language = doc_metadata.get("language", "en")
+        file_size = doc_metadata.get("file_size", 0)
+        generated_at_str = doc_metadata.get("generated_at", "")
+
+        if generated_at_str:
+            try:
+                if generated_at_str.endswith("Z"):
+                    generated_at = datetime.fromisoformat(
+                        generated_at_str.replace("Z", "+00:00")
+                    )
+                else:
+                    generated_at = datetime.fromisoformat(generated_at_str)
+            except:
+                generated_at = batch_timestamp
+        else:
+            generated_at = batch_timestamp
+
+        metadata_file_path = file_str.replace("/content/", "/metadata/").replace(
+            ".json", ".json"
+        )
+
+        json_rows.append(
+            (
+                doc_id,
+                doc_type,
+                generated_at,
+                source,
+                language,
+                file_size,
+                "spark_json_reader",
+                SCHEMA_VERSION,
+                metadata_file_path,
+                "",
+                file_str,
+                batch_id,
+                job_id,
+            )
+        )
+
+    if json_rows:
+        return spark.createDataFrame(
+            json_rows,
+            [
+                "document_id",
+                "document_type",
+                "generated_at",
+                "source",
+                "language",
+                "file_size",
+                "method",
+                "schema_version",
+                "metadata_file_path",
+                "raw_text",
+                "file_path",
+                "batch_id",
+                "job_id",
+            ],
+        )
+    return None
+
+
+def _process_parquet_files(
+    spark: SparkSession,
+    parquet_files: List[str],
+    metadata_lookup: Dict[str, Any],
+    batch_timestamp: datetime,
+    job_id: str = None,  # Add job_id parameter
+    batch_id: str = None,  # Add batch_id parameter
+) -> Any:
+    """Process Parquet files and return DataFrame"""
+    print(f"📄 Processing {len(parquet_files)} Parquet files")
+
+    # Similar processing as text files but for Parquet
+    file_metadata = {}
+    for file_path in parquet_files:
+        path = Path(file_path)
+        doc_id = path.stem
+        file_str = path.as_posix()
+
+        path_parts = file_str.split("/")
+        doc_type = "legal"
+
+        if len(path_parts) >= 4:
+            for i, part in enumerate(path_parts):
+                if (
+                    part == "docs"
+                    and i + 1 < len(path_parts)
+                    and path_parts[i + 1] == "legal"
+                ):
+                    if i + 2 < len(path_parts):
+                        potential_doc_type = path_parts[i + 2]
+                        if potential_doc_type in [
+                            "contract",
+                            "memo",
+                            "filing",
+                            "legal_memo",
+                            "court_filing",
+                            "policy_document",
+                            "legal_opinion",
+                        ]:
+                            doc_type = potential_doc_type
+                            break
+
+        file_metadata[file_str] = {"doc_id": doc_id, "doc_type": doc_type}
+
+    parquet_rows = []
+    for i, file_path in enumerate(parquet_files):
+        file_str = str(file_path)
+        metadata = file_metadata.get(
+            file_str, {"doc_id": f"parquet_doc_{i}", "doc_type": "legal"}
+        )
+
+        doc_id = metadata["doc_id"]
+        doc_type = metadata["doc_type"]
+
+        doc_metadata = metadata_lookup.get(doc_id, {})
+        source = doc_metadata.get("source", "soli_legal_document_generator")
+        language = doc_metadata.get("language", "en")
+        file_size = doc_metadata.get("file_size", 0)
+        generated_at_str = doc_metadata.get("generated_at", "")
+
+        if generated_at_str:
+            try:
+                if generated_at_str.endswith("Z"):
+                    generated_at = datetime.fromisoformat(
+                        generated_at_str.replace("Z", "+00:00")
+                    )
+                else:
+                    generated_at = datetime.fromisoformat(generated_at_str)
+            except:
+                generated_at = batch_timestamp
+        else:
+            generated_at = batch_timestamp
+
+        metadata_file_path = file_str.replace("/content/", "/metadata/").replace(
+            ".parquet", ".json"
+        )
+
+        parquet_rows.append(
+            (
+                doc_id,
+                doc_type,
+                generated_at,
+                source,
+                language,
+                file_size,
+                "spark_parquet_reader",
+                SCHEMA_VERSION,
+                metadata_file_path,
+                "",
+                file_str,
+                batch_id,
+                job_id,
+            )
+        )
+
+    if parquet_rows:
+        return spark.createDataFrame(
+            parquet_rows,
+            [
+                "document_id",
+                "document_type",
+                "generated_at",
+                "source",
+                "language",
+                "file_size",
+                "method",
+                "schema_version",
+                "metadata_file_path",
+                "raw_text",
+                "file_path",
+                "batch_id",
+                "job_id",
+            ],
+        )
+    return None
+
+
 def _insert_files_with_partition_tracking(
     spark: SparkSession,
     file_groups: Dict[str, List[str]],
     table_name: str,
     observability_logger: HybridLogger,
+    metadata_files: List[str] = None,
+    files_metadata_df: DataFrame = None,
+    job_id: str = None,  # Add job_id parameter
+    batch_id: str = None,  # Add batch_id parameter
 ) -> Dict[str, Any]:
     """
     Process files with Spark partition tracking using distributed processing
@@ -1281,17 +1391,15 @@ def _insert_files_with_partition_tracking(
         file_groups: Dictionary mapping file types to lists of file paths
         table_name: Target table name for insertion
         observability_logger: HybridLogger instance for metrics and monitoring
+        metadata_files: List of metadata file paths (optional)
+        files_metadata_df: DataFrame with comprehensive metadata for efficient file size lookups (optional)
+        job_id: Job identifier for tracking
+        batch_id: Batch identifier for tracking
 
     Returns:
         Dict[str, Any]: Processing results with detailed failure information
     """
     print("🔄 Using distributed partition tracking for ELT")
-
-    # Validate required parameters
-    if observability_logger is None:
-        raise ValueError(
-            "❌ Observability logger is required for metrics and monitoring"
-        )
 
     # Start operation tracking
     observability_logger.start_operation(
@@ -1299,16 +1407,24 @@ def _insert_files_with_partition_tracking(
     )
 
     job_start_time = time.time()
-    all_source_files = []
 
-    # Collect all files for processing
-    all_files = []
+    # Generate a fixed timestamp once for the entire batch to ensure determinism
+    batch_timestamp = datetime.now(timezone.utc)
+
+    # Generate job_id and batch_id if not provided
+    if job_id is None:
+        job_id = generate_job_id()
+    if batch_id is None:
+        batch_id = f"batch_{int(batch_timestamp.timestamp())}"
+
+    # Collect all content files for processing
+    all_content_files = []
     for format_type, files in file_groups.items():
         if files:
-            all_files.extend(files)
+            all_content_files.extend(files)
 
-    if not all_files:
-        print("⚠️ No files to process")
+    if not all_content_files:
+        print("⚠️ No content files to process")
         return {
             "success": True,
             "successful_inserts": 0,
@@ -1318,639 +1434,73 @@ def _insert_files_with_partition_tracking(
             "processing_time_seconds": 0,
         }
 
-    print(f"📊 Processing {len(all_files)} files using distributed approach")
-
-    try:
-        # Define UDFs for document extraction
-        def extract_document_id_udf(file_path):
-            if not file_path:
-                return "unknown"
-            filename = file_path.split("/")[-1]
-            return (
-                filename.replace(".txt", "")
-                .replace(".json", "")
-                .replace(".parquet", "")
-            )
-
-        def extract_document_type_udf(file_path):
-            if not file_path:
-                return "unknown"
-            filename = file_path.split("/")[-1]
-            parts = (
-                filename.replace(".txt", "")
-                .replace(".json", "")
-                .replace(".parquet", "")
-                .split("_")
-            )
-            return parts[3] if len(parts) >= 4 else "unknown"
-
-        # Register UDFs
-        extract_id_udf = udf(extract_document_id_udf, StringType())
-        extract_type_udf = udf(extract_document_type_udf, StringType())
-
-        # Group files by type for efficient processing
-        text_files = [f for f in all_files if str(f).endswith(".txt")]
-        json_files = [f for f in all_files if str(f).endswith(".json")]
-        parquet_files = [f for f in all_files if str(f).endswith(".parquet")]
-
-        successful_inserts = 0
-        failed_inserts = 0
-        failed_files_by_partition = {}
-
-        # Process text files in batch using Spark's text reading
-        if text_files:
-            print(f"📄 Processing {len(text_files)} text files")
-            try:
-                # Use Spark's native text reading for distributed processing
-                text_paths = [str(f) for f in text_files]
-                text_df = spark.read.text(text_paths)
-
-                # Add file metadata
-                text_processed = (
-                    text_df.withColumn("file_path", input_file_name())
-                    .withColumn("document_id", extract_id_udf(input_file_name()))
-                    .withColumn("document_type", extract_type_udf(input_file_name()))
-                    .withColumn("language", lit("en"))
-                    .withColumn("generated_at", current_timestamp())
-                    .withColumn("source", lit("soli_legal_document_generator"))
-                    .withColumn("schema_version", lit(SCHEMA_VERSION))
-                    .withColumn("metadata_file_path", lit(""))
-                    .withColumn("method", lit("spark_text_reader"))
-                    .withColumn("file_size", lit(0))
-                    .withColumn("raw_text", concat_ws("\n", col("value")))
-                    .withColumn("batch_id", lit(""))
-                    .withColumn("job_id", lit(""))
-                )
-
-                # Select only columns that match the table schema
-                text_final = text_processed.select(
-                    "document_id",
-                    "document_type",
-                    "generated_at",
-                    "source",
-                    "language",
-                    "file_size",
-                    "method",
-                    "schema_version",
-                    "metadata_file_path",
-                    "raw_text",
-                    "file_path",
-                    "batch_id",
-                    "job_id",
-                )
-
-                # Merge text files (ensures uniqueness by document_id)
-                text_final.writeTo(table_name).overwritePartitions()
-                successful_inserts += len(text_files)
-                print(f"✅ Successfully processed {len(text_files)} text files")
-
-            except Exception as e:
-                print(f"❌ Error processing text files: {e}")
-                failed_inserts += len(text_files)
-                # Track failures by partition
-                shuffle_partitions = 4
-                for i, file_path in enumerate(text_files):
-                    partition_id = i % shuffle_partitions
-                    if partition_id not in failed_files_by_partition:
-                        failed_files_by_partition[partition_id] = []
-
-                    failed_files_by_partition[partition_id].append(
-                        {
-                            "file_path": str(file_path),
-                            "document_id": extract_document_id_udf(str(file_path)),
-                            "document_type": extract_document_type_udf(str(file_path)),
-                            "error_message": str(e),
-                            "error_code": "E001",
-                            "record_size_bytes": 0,
-                            "partition_id": partition_id,
-                            "failure_timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-
-        # Process JSON files in batch
-        if json_files:
-            print(f"📄 Processing {len(json_files)} JSON files")
-            try:
-                # Use Spark's native JSON reading
-                json_paths = [str(f) for f in json_files]
-                json_df = spark.read.option("multiline", "true").json(json_paths)
-
-                # Debug: Print schema to understand JSON structure
-                print(f"📊 JSON schema: {json_df.schema}")
-                print(f"📊 JSON sample: {json_df.limit(1).toPandas()}")
-
-                # Add file metadata and extract content
-                json_processed = (
-                    json_df.withColumn("file_path", input_file_name())
-                    .withColumn("document_id", extract_id_udf(input_file_name()))
-                    .withColumn("document_type", extract_type_udf(input_file_name()))
-                    .withColumn("raw_text", lit(""))
-                    .withColumn("language", lit("en"))
-                    .withColumn("generated_at", current_timestamp())
-                    .withColumn("source", lit("soli_legal_document_generator"))
-                    .withColumn("schema_version", lit(SCHEMA_VERSION))
-                    .withColumn("metadata_file_path", lit(""))
-                    .withColumn("method", lit("spark_json_reader"))
-                    .withColumn("file_size", lit(0))
-                    .withColumn("batch_id", lit(""))
-                    .withColumn("job_id", lit(""))
-                )
-
-                # Select only columns that match the table schema
-                json_final = json_processed.select(
-                    "document_id",
-                    "document_type",
-                    "generated_at",
-                    "source",
-                    "language",
-                    "file_size",
-                    "method",
-                    "schema_version",
-                    "metadata_file_path",
-                    "raw_text",
-                    "file_path",
-                    "batch_id",
-                    "job_id",
-                )
-
-                # Merge JSON files (ensures uniqueness by document_id)
-                json_final.writeTo(table_name).overwritePartitions()
-                successful_inserts += len(json_files)
-                print(f"✅ Successfully processed {len(json_files)} JSON files")
-
-            except Exception as e:
-                print(f"❌ Error processing JSON files: {e}")
-                failed_inserts += len(json_files)
-                # Track failures by partition
-                shuffle_partitions = 4
-                for i, file_path in enumerate(json_files):
-                    partition_id = i % shuffle_partitions
-                    if partition_id not in failed_files_by_partition:
-                        failed_files_by_partition[partition_id] = []
-
-                    failed_files_by_partition[partition_id].append(
-                        {
-                            "file_path": str(file_path),
-                            "document_id": extract_document_id_udf(str(file_path)),
-                            "document_type": extract_document_type_udf(str(file_path)),
-                            "error_message": str(e),
-                            "error_code": "E002",
-                            "record_size_bytes": 0,
-                            "partition_id": partition_id,
-                            "failure_timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-
-        # Process Parquet files in batch
-        if parquet_files:
-            print(f"📄 Processing {len(parquet_files)} Parquet files")
-            try:
-                # Use Spark's native Parquet reading
-                parquet_paths = [str(f) for f in parquet_files]
-                parquet_df = spark.read.parquet(parquet_paths)
-
-                # Add file metadata
-                parquet_processed = (
-                    parquet_df.withColumn("file_path", input_file_name())
-                    .withColumn("document_id", extract_id_udf(input_file_name()))
-                    .withColumn("document_type", extract_type_udf(input_file_name()))
-                    .withColumn("raw_text", lit(""))
-                    .withColumn("language", lit("en"))
-                    .withColumn("generated_at", current_timestamp())
-                    .withColumn("source", lit("soli_legal_document_generator"))
-                    .withColumn("schema_version", lit(SCHEMA_VERSION))
-                    .withColumn("metadata_file_path", lit(""))
-                    .withColumn("method", lit("spark_parquet_reader"))
-                    .withColumn("file_size", lit(0))
-                    .withColumn("batch_id", lit(""))
-                    .withColumn("job_id", lit(""))
-                )
-
-                # Select only columns that match the table schema
-                parquet_final = parquet_processed.select(
-                    "document_id",
-                    "document_type",
-                    "generated_at",
-                    "source",
-                    "language",
-                    "file_size",
-                    "method",
-                    "schema_version",
-                    "metadata_file_path",
-                    "raw_text",
-                    "file_path",
-                    "batch_id",
-                    "job_id",
-                )
-
-                # Merge Parquet files (ensures uniqueness by document_id)
-                parquet_final.writeTo(table_name).overwritePartitions()
-                successful_inserts += len(parquet_files)
-                print(f"✅ Successfully processed {len(parquet_files)} Parquet files")
-
-            except Exception as e:
-                print(f"❌ Error processing Parquet files: {e}")
-                failed_inserts += len(parquet_files)
-                # Track failures by partition
-                shuffle_partitions = 4
-                for i, file_path in enumerate(parquet_files):
-                    partition_id = i % shuffle_partitions
-                    if partition_id not in failed_files_by_partition:
-                        failed_files_by_partition[partition_id] = []
-
-                    failed_files_by_partition[partition_id].append(
-                        {
-                            "file_path": str(file_path),
-                            "document_id": extract_document_id_udf(str(file_path)),
-                            "document_type": extract_document_type_udf(str(file_path)),
-                            "error_message": str(e),
-                            "error_code": "E003",
-                            "record_size_bytes": 0,
-                            "partition_id": partition_id,
-                            "failure_timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-
-        # Calculate processing time
-        processing_time_seconds = time.time() - job_start_time
-
-        # Use fixed partition count matching spark-defaults.conf
-        shuffle_partitions = 4
-
-        # Calculate partition metrics
-        partition_metrics = {
-            "total_partitions": 4,
-            "files_per_partition": len(all_files) // 4 if len(all_files) > 0 else 0,
-            "processing_time_seconds": processing_time_seconds,
-            "success_rate": successful_inserts / len(all_files) if all_files else 0,
-        }
-
-        print(f"✅ Distributed processing complete:")
-        print(f"   - Total files: {len(all_files)}")
-        print(f"   - Successful: {successful_inserts}")
-        print(f"   - Failed: {failed_inserts}")
-        print(f"   - Processing time: {processing_time_seconds:.2f}s")
-        print(f"   - Success rate: {partition_metrics['success_rate']:.2%}")
-        print(f"   - Shuffle partitions: 4")
-        print(f"   - Files per partition: {partition_metrics['files_per_partition']}")
-
-        return {
-            "success": failed_inserts == 0,
-            "successful_inserts": successful_inserts,
-            "failed_inserts": failed_inserts,
-            "failed_files_by_partition": failed_files_by_partition,
-            "partition_metrics": partition_metrics,
-            "processing_time_seconds": processing_time_seconds,
-        }
-
-    except Exception as e:
-        print(f"❌ Error in distributed partition tracking: {e}")
-        processing_time_seconds = time.time() - job_start_time
-
-        return {
-            "success": False,
-            "successful_inserts": 0,
-            "failed_inserts": len(all_files),
-            "failed_files_by_partition": {},
-            "partition_metrics": {
-                "processing_time_seconds": processing_time_seconds,
-                "error": str(e),
-            },
-            "processing_time_seconds": processing_time_seconds,
-        }
-
-
-def _process_text_file_hybrid(
-    file_path: str,
-    spark: SparkSession = None,
-) -> Dict[str, Any]:
-    """
-    Process a text file using hybrid approach - binaryFile for metadata, text for content
-
-    Args:
-        file_path: Path to the text file to process
-        spark: SparkSession for MinIO file processing (required for MinIO paths)
-
-    Returns:
-        Dict[str, Any]: Dictionary with keys 'is_valid', 'data', 'errors'
-    """
-    try:
-        file_path_str = str(file_path)
-
-        # Check if this is a MinIO path or should be treated as one
-        is_minio = is_minio_path(file_path_str)
-
-        # If not a MinIO path but contains slashes and looks like a MinIO object path,
-        # treat it as a MinIO path by adding the s3a:// prefix
-        if not is_minio and "/" in file_path_str and not os.path.exists(file_path_str):
-            # This looks like a MinIO object path without the prefix
-            file_path_str = f"s3a://{file_path_str}"
-            is_minio = True
-
-        if is_minio:
-            if spark is None:
-                raise ValueError("Spark session required for MinIO file processing")
-
-            # Step 1: Get metadata using binaryFile (fast)
-            try:
-                metadata_df = spark.read.format("binaryFile").load(file_path_str)
-                metadata_row = metadata_df.first()
-                if metadata_row:
-                    file_size = (
-                        metadata_row.length if hasattr(metadata_row, "length") else 1024
-                    )
-                else:
-                    file_size = 1024
-            except Exception as metadata_error:
-                print(
-                    f"⚠️  binaryFile metadata failed, using fallback: {metadata_error}"
-                )
-                file_size = 1024
-
-            # Step 2: Read content using text format (only when needed)
-            content = read_minio_file_content(spark, file_path_str)
-
-            # Extract filename from MinIO path
-            path_info = get_minio_path_info(file_path_str)
-            filename = (
-                path_info["key"].split("/")[-1] if path_info["key"] else "unknown"
-            )
-
-            # Try to read corresponding metadata JSON file
-            minio_metadata = _read_minio_metadata(spark, file_path_str)
-        else:
-            # Local file processing - use traditional approach
-            content = ""
-            with open(file_path, "r", encoding="utf-8") as f:
-                chunk_size = 1024 * 1024  # 1MB chunks
-                while True:
-                    chunk = f.read(chunk_size)
-                    if not chunk:
-                        break
-                    content += chunk
-
-                    # Check if we're exceeding reasonable limits
-                    if len(content) > 100 * 1024 * 1024:  # 100MB limit
-                        raise ValueError(f"File {file_path.name} exceeds 100MB limit")
-
-            file_size = file_path.stat().st_size
-            filename = file_path.name
-            minio_metadata = {}
-
-        # Extract metadata from filename (fallback)
-        # Try to extract document type from path structure
-        path_parts = file_path_str.split("/")
-        doc_type = "unknown"
-
-        # Look for document type in the path structure
-        if len(path_parts) >= 3:
-            # Check if there's a document type in the path (e.g., legal_memo, contract, etc.)
-            potential_doc_type = path_parts[-2]  # Second to last part
-            if potential_doc_type in [
-                "legal_memo",
-                "contract",
-                "court_filing",
-                "policy_document",
-                "legal_opinion",
-            ]:
-                doc_type = potential_doc_type
-            elif potential_doc_type == "legal":
-                # If we're in a legal subdirectory, try to get more specific
-                if len(path_parts) >= 4:
-                    doc_type = path_parts[-3]  # Third to last part
-
-        # Use filename as document ID (remove extension)
-        doc_id = filename.replace(".txt", "")
-
-        # Use MinIO metadata if available, otherwise fallback to filename parsing
-        if minio_metadata:
-            doc_id = minio_metadata.get("document_id", doc_id)
-            doc_type = minio_metadata.get("document_type", doc_type)
-
-        # Calculate document statistics
-        doc_length = len(content)
-
-        # In ELT approach, we load all data regardless of quality
-        # Data quality will be handled in the transform layer
-        is_valid = True  # Always true in ELT approach
-        errors_list = []  # No validation errors in ELT approach
-
-        result_data = {
-            "document_id": doc_id,
-            "document_type": doc_type,
-            "raw_text": content,
-            "generated_at": datetime.now(timezone.utc),
-            "source": minio_metadata.get("source", "soli_legal_document_generator"),
-            "file_path": file_path_str,
-            "language": "en",
-            "schema_version": SCHEMA_VERSION,
-            "metadata_file_path": file_path_str.replace(".txt", ".json"),
-            "method": "hybrid" if is_minio_path(file_path_str) else "local",
-            "load_timestamp": datetime.now(timezone.utc),
-            "load_status": "loaded",
-            "load_error": "",
-            "load_error_code": "",
-            "file_size": file_size,
-        }
-
-        return {
-            "is_valid": is_valid,
-            "data": result_data,
-            "errors": errors_list,
-        }
-
-    except Exception as e:
-        filename = (
-            file_path.name
-            if hasattr(file_path, "name")
-            else str(file_path).split("/")[-1]
-        )
-        return {
-            "is_valid": False,
-            "data": {
-                "document_id": filename,
-                "document_type": "unknown",
-                "raw_text": "",
-                "generated_at": datetime.now(timezone.utc),
-                "source": "soli_legal_document_generator",
-                "file_path": str(file_path),
-                "language": "en",
-                "schema_version": SCHEMA_VERSION,
-                "metadata_file_path": "",
-                "method": "hybrid",
-                "load_timestamp": datetime.now(timezone.utc),
-                "load_status": "load_failed",
-                "load_error": str(e),
-                "load_error_code": "E999",
-                "file_size": 0,
-            },
-            "errors": [
-                {"message": f"Processing error: {str(e)}", "type": "processing_error"}
-            ],
-        }
-
-
-def _process_text_file(
-    file_path: str,
-    spark: SparkSession = None,
-) -> Dict[str, Any]:
-    """
-    Process a text file and return document data - ELT approach
-
-    Args:
-        file_path: Path to the text file to process
-        spark: SparkSession for MinIO file processing (required for MinIO paths)
-
-    Returns:
-        Dict[str, Any]: Dictionary with keys 'is_valid', 'data', 'errors'
-
-    Raises:
-        ValueError: If Spark session is required but not provided for MinIO paths
-    """
-    try:
-        file_path_str = str(file_path)
-
-        # Check if this is a MinIO path or should be treated as one
-        is_minio = is_minio_path(file_path_str)
-
-        # If not a MinIO path but contains slashes and looks like a MinIO object path,
-        # treat it as a MinIO path by adding the s3a:// prefix
-        if not is_minio and "/" in file_path_str and not os.path.exists(file_path_str):
-            # This looks like a MinIO object path without the prefix
-            file_path_str = f"s3a://{file_path_str}"
-            is_minio = True
-
-        if is_minio:
-            if spark is None:
-                raise ValueError("Spark session required for MinIO file processing")
-
-            # Read content from MinIO using Spark
-            content = read_minio_file_content(spark, file_path_str)
-            file_size = get_minio_file_size(spark, file_path_str)
-
-            # Validate that we got some content
-            if not content:
-                print(f"⚠️  Warning: No content read from {file_path_str}")
-                content = ""  # Ensure we have an empty string
-
-            # Extract filename from MinIO path
-            path_info = get_minio_path_info(file_path_str)
-            filename = (
-                path_info["key"].split("/")[-1] if path_info["key"] else "unknown"
-            )
-
-            # Try to read corresponding metadata JSON file
-            minio_metadata = _read_minio_metadata(spark, file_path_str)
-        else:
-            # Local file processing
-            content = ""
-            with open(file_path, "r", encoding="utf-8") as f:
-                chunk_size = 1024 * 1024  # 1MB chunks
-                while True:
-                    chunk = f.read(chunk_size)
-                    if not chunk:
-                        break
-                    content += chunk
-
-                    # Check if we're exceeding reasonable limits
-                    if len(content) > 100 * 1024 * 1024:  # 100MB limit
-                        raise ValueError(f"File {file_path.name} exceeds 100MB limit")
-
-            file_size = file_path.stat().st_size
-            filename = file_path.name
-            minio_metadata = {}
-
-        # Extract metadata from filename (fallback)
-        # Try to extract document type from path structure
-        path_parts = file_path_str.split("/")
-        doc_type = "unknown"
-
-        # Look for document type in the path structure
-        if len(path_parts) >= 3:
-            # Check if there's a document type in the path (e.g., legal_memo, contract, etc.)
-            potential_doc_type = path_parts[-2]  # Second to last part
-            if potential_doc_type in [
-                "legal_memo",
-                "contract",
-                "court_filing",
-                "policy_document",
-                "legal_opinion",
-            ]:
-                doc_type = potential_doc_type
-            elif potential_doc_type == "legal":
-                # If we're in a legal subdirectory, try to get more specific
-                if len(path_parts) >= 4:
-                    doc_type = path_parts[-3]  # Third to last part
-
-        # Use filename as document ID (remove extension)
-        doc_id = filename.replace(".txt", "")
-
-        # Use MinIO metadata if available, otherwise fallback to filename parsing
-        if minio_metadata:
-            doc_id = minio_metadata.get("document_id", doc_id)
-            doc_type = minio_metadata.get("document_type", doc_type)
-
-        # Calculate document statistics
-        doc_length = len(content)
-
-        # In ELT approach, we load all data regardless of quality
-        # Data quality will be handled in the transform layer
-        is_valid = True  # Always true in ELT approach
-        errors_list = []  # No validation errors in ELT approach
-
-        result_data = {
-            "document_id": doc_id,
-            "document_type": doc_type,
-            "raw_text": content,
-            "generated_at": datetime.now(timezone.utc),
-            "source": minio_metadata.get("source", "soli_legal_document_generator"),
-            "file_path": file_path_str,
-            "language": "en",
-            "schema_version": SCHEMA_VERSION,
-            "metadata_file_path": file_path_str.replace(".txt", ".json"),
-            "method": "spark" if is_minio_path(file_path_str) else "local",
-            "load_timestamp": datetime.now(timezone.utc),
-            "load_status": "loaded",
-            "load_error": "",
-            "load_error_code": "",
-            "file_size": file_size,
-        }
-
-        return {
-            "is_valid": is_valid,
-            "data": result_data,
-            "errors": errors_list,
-        }
-
-    except Exception as e:
-        filename = (
-            file_path.name
-            if hasattr(file_path, "name")
-            else str(file_path).split("/")[-1]
-        )
-        return {
-            "is_valid": False,
-            "data": {
-                "document_id": filename,
-                "document_type": "unknown",
-                "raw_text": "",
-                "generated_at": datetime.now(timezone.utc),
-                "source": "soli_legal_document_generator",
-                "file_path": str(file_path),
-                "language": "en",
-                "schema_version": SCHEMA_VERSION,
-                "metadata_file_path": "",
-                "method": "sequential",
-                "load_timestamp": datetime.now(timezone.utc),
-                "load_status": "load_failed",
-                "load_error": str(e),
-                "load_error_code": "E999",
-                "file_size": 0,
-            },
-            "errors": [
-                {"message": f"Processing error: {str(e)}", "type": "processing_error"}
-            ],
-        }
+    print(
+        f"📊 Processing {len(all_content_files)} content files using distributed approach"
+    )
+
+    # Process metadata files first
+    metadata_lookup = {}
+    if metadata_files:
+        metadata_lookup = _process_metadata_files(spark, metadata_files)
+
+    # Process content files
+    content_results = _process_content_files(
+        spark,
+        all_content_files,
+        metadata_lookup,
+        batch_timestamp,
+        files_metadata_df,
+        job_id,
+        batch_id,
+    )
+
+    successful_inserts = content_results["successful_inserts"]
+    failed_inserts = content_results["failed_inserts"]
+    all_dataframes = content_results["dataframes"]
+    failed_files_by_partition = {}
+
+    # Merge all DataFrames to the table
+    for df in all_dataframes:
+        if df is not None:
+            merge_to_iceberg_table(spark, df, table_name)
+            print(f"✅ Successfully merged DataFrame with {df.count()} rows")
+
+    # Calculate processing time
+    processing_time_seconds = time.time() - job_start_time
+
+    # Use fixed partition count matching spark-defaults.conf
+    shuffle_partitions = 4
+
+    # Calculate partition metrics
+    partition_metrics = {
+        "total_partitions": 4,
+        "files_per_partition": (
+            len(all_content_files) // 4 if len(all_content_files) > 0 else 0
+        ),
+        "processing_time_seconds": processing_time_seconds,
+        "success_rate": (
+            successful_inserts / len(all_content_files) if all_content_files else 0
+        ),
+    }
+
+    print(f"✅ Distributed processing complete:")
+    print(f"   - Total content files: {len(all_content_files)}")
+    print(f"   - Metadata files loaded: {len(metadata_lookup)}")
+    print(f"   - Successful: {successful_inserts}")
+    print(f"   - Failed: {failed_inserts}")
+    print(f"   - Processing time: {processing_time_seconds:.2f}s")
+    print(f"   - Success rate: {partition_metrics['success_rate']:.2%}")
+    print(f"   - Shuffle partitions: 4")
+    print(f"   - Files per partition: {partition_metrics['files_per_partition']}")
+
+    return {
+        "success": failed_inserts == 0,
+        "successful_inserts": successful_inserts,
+        "failed_inserts": failed_inserts,
+        "failed_files_by_partition": failed_files_by_partition,
+        "partition_metrics": partition_metrics,
+        "processing_time_seconds": processing_time_seconds,
+    }
 
 
 def _read_minio_metadata(spark, content_file_path):
@@ -2001,481 +1551,6 @@ def _read_minio_metadata(spark, content_file_path):
     except Exception as e:
         print(f"⚠️  Error reading MinIO metadata: {e}")
         return {}
-
-
-def _process_json_file(file_path, spark=None):
-    """
-    Process a JSON file and extract document data
-
-    Args:
-        file_path: Path to the JSON file to process
-        spark: SparkSession for MinIO file processing (required for MinIO paths)
-
-    Returns:
-        Dict[str, Any]: Dictionary with keys 'is_valid', 'data', 'errors'
-    """
-    try:
-        file_path_str = str(file_path)
-
-        # Check if this is a MinIO path
-        is_minio = is_minio_path(file_path_str)
-
-        # If not a MinIO path but contains slashes and looks like a MinIO object path,
-        # treat it as a MinIO path by adding the s3a:// prefix
-        if not is_minio and "/" in file_path_str and not os.path.exists(file_path_str):
-            file_path_str = f"s3a://{file_path_str}"
-            is_minio = True
-
-        if is_minio:
-            if spark is None:
-                raise ValueError("Spark session required for MinIO file processing")
-
-            # Read JSON content from MinIO
-            content = read_minio_file_content(spark, file_path_str)
-            file_size = get_minio_file_size(spark, file_path_str)
-
-            # Extract filename from MinIO path
-            path_info = get_minio_path_info(file_path_str)
-            filename = (
-                path_info["key"].split("/")[-1] if path_info["key"] else "unknown"
-            )
-        else:
-            # Local file processing
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            file_size = file_path.stat().st_size
-            filename = file_path.name
-
-        # Parse JSON content
-        import json
-
-        try:
-            json_data = json.loads(content)
-        except json.JSONDecodeError as e:
-            return {
-                "is_valid": False,
-                "data": {
-                    "document_id": filename.replace(".json", ""),
-                    "document_type": "unknown",
-                    "raw_text": content,
-                    "generated_at": datetime.now(timezone.utc),
-                    "source": "soli_legal_document_generator",
-                    "file_path": file_path_str,
-                    "language": "en",
-                    "schema_version": SCHEMA_VERSION,
-                    "metadata_file_path": "",
-                    "method": "hybrid" if is_minio else "local",
-                    "file_size": file_size,
-                },
-                "errors": [
-                    {
-                        "message": f"Invalid JSON format: {str(e)}",
-                        "type": "json_parse_error",
-                    }
-                ],
-            }
-
-        # Extract document information from JSON
-        # Handle different JSON structures
-        if isinstance(json_data, dict):
-            # Single document JSON
-            doc_id = json_data.get("document_id", filename.replace(".json", ""))
-            doc_type = json_data.get("document_type", "unknown")
-            raw_text = json_data.get("raw_text", json_data.get("content", ""))
-            generated_at_str = json_data.get(
-                "generated_at", json_data.get("timestamp", "")
-            )
-            source = json_data.get("source", "soli_legal_document_generator")
-            language = json_data.get("language", "en")
-
-            # Parse generated_at if it's a string
-            if isinstance(generated_at_str, str):
-                try:
-                    generated_at = datetime.fromisoformat(
-                        generated_at_str.replace("Z", "+00:00")
-                    )
-                except:
-                    generated_at = datetime.now(timezone.utc)
-            else:
-                generated_at = datetime.now(timezone.utc)
-
-        elif isinstance(json_data, list):
-            # Array of documents - take the first one for now
-            if len(json_data) > 0 and isinstance(json_data[0], dict):
-                doc_data = json_data[0]
-                doc_id = doc_data.get("document_id", filename.replace(".json", ""))
-                doc_type = doc_data.get("document_type", "unknown")
-                raw_text = doc_data.get("raw_text", doc_data.get("content", ""))
-                generated_at_str = doc_data.get(
-                    "generated_at", doc_data.get("timestamp", "")
-                )
-                source = doc_data.get("source", "soli_legal_document_generator")
-                language = doc_data.get("language", "en")
-
-                # Parse generated_at if it's a string
-                if isinstance(generated_at_str, str):
-                    try:
-                        generated_at = datetime.fromisoformat(
-                            generated_at_str.replace("Z", "+00:00")
-                        )
-                    except:
-                        generated_at = datetime.now(timezone.utc)
-                else:
-                    generated_at = datetime.now(timezone.utc)
-            else:
-                # Fallback for empty or invalid array
-                doc_id = filename.replace(".json", "")
-                doc_type = "unknown"
-                raw_text = content
-                generated_at = datetime.now(timezone.utc)
-                source = "soli_legal_document_generator"
-                language = "en"
-        else:
-            # Fallback for other JSON types
-            doc_id = filename.replace(".json", "")
-            doc_type = "unknown"
-            raw_text = content
-            generated_at = datetime.now(timezone.utc)
-            source = "soli_legal_document_generator"
-            language = "en"
-
-        # In ELT approach, we load all data regardless of quality
-        is_valid = True
-        errors_list = []
-
-        result_data = {
-            "document_id": doc_id,
-            "document_type": doc_type,
-            "raw_text": raw_text,
-            "generated_at": generated_at,
-            "source": source,
-            "file_path": file_path_str,
-            "language": language,
-            "schema_version": SCHEMA_VERSION,
-            "metadata_file_path": file_path_str,
-            "method": "hybrid" if is_minio else "local",
-            "file_size": file_size,
-        }
-
-        return {
-            "is_valid": is_valid,
-            "data": result_data,
-            "errors": errors_list,
-        }
-
-    except Exception as e:
-        filename = (
-            file_path.name
-            if hasattr(file_path, "name")
-            else str(file_path).split("/")[-1]
-        )
-        return {
-            "is_valid": False,
-            "data": {
-                "document_id": filename.replace(".json", ""),
-                "document_type": "unknown",
-                "raw_text": "",
-                "generated_at": datetime.now(timezone.utc),
-                "source": "soli_legal_document_generator",
-                "file_path": str(file_path),
-                "language": "en",
-                "schema_version": SCHEMA_VERSION,
-                "metadata_file_path": "",
-                "method": "hybrid",
-                "file_size": 0,
-            },
-            "errors": [
-                {"message": f"Processing error: {str(e)}", "type": "processing_error"}
-            ],
-        }
-
-
-def _process_parquet_file(file_path, spark=None):
-    """
-    Process a Parquet file and extract document data
-
-    Args:
-        file_path: Path to the Parquet file to process
-        spark: SparkSession for MinIO file processing (required for MinIO paths)
-
-    Returns:
-        Dict[str, Any]: Dictionary with keys 'is_valid', 'data', 'errors'
-    """
-    try:
-        file_path_str = str(file_path)
-
-        # Check if this is a MinIO path
-        is_minio = is_minio_path(file_path_str)
-
-        # If not a MinIO path but contains slashes and looks like a MinIO object path,
-        # treat it as a MinIO path by adding the s3a:// prefix
-        if not is_minio and "/" in file_path_str and not os.path.exists(file_path_str):
-            file_path_str = f"s3a://{file_path_str}"
-            is_minio = True
-
-        if is_minio:
-            if spark is None:
-                raise ValueError("Spark session required for MinIO file processing")
-
-            # Read Parquet file from MinIO using Spark
-            try:
-                parquet_df = spark.read.parquet(file_path_str)
-                file_size = get_minio_file_size(spark, file_path_str)
-            except Exception as e:
-                return {
-                    "is_valid": False,
-                    "data": {
-                        "document_id": file_path_str.split("/")[-1].replace(
-                            ".parquet", ""
-                        ),
-                        "document_type": "unknown",
-                        "raw_text": "",
-                        "generated_at": datetime.now(timezone.utc),
-                        "source": "soli_legal_document_generator",
-                        "file_path": file_path_str,
-                        "language": "en",
-                        "schema_version": SCHEMA_VERSION,
-                        "metadata_file_path": "",
-                        "method": "hybrid",
-                        "file_size": 0,
-                    },
-                    "errors": [
-                        {
-                            "message": f"Failed to read Parquet file: {str(e)}",
-                            "type": "parquet_read_error",
-                        }
-                    ],
-                }
-        else:
-            # Local file processing
-            try:
-                parquet_df = spark.read.parquet(file_path_str)
-                file_size = file_path.stat().st_size
-            except Exception as e:
-                return {
-                    "is_valid": False,
-                    "data": {
-                        "document_id": file_path.name.replace(".parquet", ""),
-                        "document_type": "unknown",
-                        "raw_text": "",
-                        "generated_at": datetime.now(timezone.utc),
-                        "source": "soli_legal_document_generator",
-                        "file_path": file_path_str,
-                        "language": "en",
-                        "schema_version": SCHEMA_VERSION,
-                        "metadata_file_path": "",
-                        "method": "local",
-                        "file_size": 0,
-                    },
-                    "errors": [
-                        {
-                            "message": f"Failed to read Parquet file: {str(e)}",
-                            "type": "parquet_read_error",
-                        }
-                    ],
-                }
-
-        # Extract filename
-        filename = (
-            file_path_str.split("/")[-1] if "/" in file_path_str else str(file_path)
-        )
-
-        # Get the first row from the Parquet file
-        first_row = parquet_df.first()
-        if first_row is None:
-            return {
-                "is_valid": False,
-                "data": {
-                    "document_id": filename.replace(".parquet", ""),
-                    "document_type": "unknown",
-                    "raw_text": "",
-                    "generated_at": datetime.now(timezone.utc),
-                    "source": "soli_legal_document_generator",
-                    "file_path": file_path_str,
-                    "language": "en",
-                    "schema_version": SCHEMA_VERSION,
-                    "metadata_file_path": "",
-                    "method": "hybrid" if is_minio else "local",
-                    "file_size": file_size,
-                },
-                "errors": [
-                    {"message": "Parquet file is empty", "type": "empty_file_error"}
-                ],
-            }
-
-        # Convert row to dictionary
-        row_dict = first_row.asDict()
-
-        # Extract document information from Parquet row
-        doc_id = row_dict.get("document_id", filename.replace(".parquet", ""))
-        doc_type = row_dict.get("document_type", "unknown")
-        raw_text = row_dict.get("raw_text", row_dict.get("content", ""))
-        generated_at_str = row_dict.get("generated_at", row_dict.get("timestamp", ""))
-        source = row_dict.get("source", "soli_legal_document_generator")
-        language = row_dict.get("language", "en")
-
-        # Parse generated_at if it's a string
-        if isinstance(generated_at_str, str):
-            try:
-                generated_at = datetime.fromisoformat(
-                    generated_at_str.replace("Z", "+00:00")
-                )
-            except:
-                generated_at = datetime.now(timezone.utc)
-        else:
-            generated_at = datetime.now(timezone.utc)
-
-        # In ELT approach, we load all data regardless of quality
-        is_valid = True
-        errors_list = []
-
-        result_data = {
-            "document_id": doc_id,
-            "document_type": doc_type,
-            "raw_text": raw_text,
-            "generated_at": generated_at,
-            "source": source,
-            "file_path": file_path_str,
-            "language": language,
-            "schema_version": SCHEMA_VERSION,
-            "metadata_file_path": file_path_str,
-            "method": "hybrid" if is_minio else "local",
-            "file_size": file_size,
-        }
-
-        return {
-            "is_valid": is_valid,
-            "data": result_data,
-            "errors": errors_list,
-        }
-
-    except Exception as e:
-        filename = (
-            file_path.name
-            if hasattr(file_path, "name")
-            else str(file_path).split("/")[-1]
-        )
-        return {
-            "is_valid": False,
-            "data": {
-                "document_id": filename.replace(".parquet", ""),
-                "document_type": "unknown",
-                "raw_text": "",
-                "generated_at": datetime.now(timezone.utc),
-                "source": "soli_legal_document_generator",
-                "file_path": str(file_path),
-                "language": "en",
-                "schema_version": SCHEMA_VERSION,
-                "metadata_file_path": "",
-                "method": "hybrid",
-                "file_size": 0,
-            },
-            "errors": [
-                {"message": f"Processing error: {str(e)}", "type": "processing_error"}
-            ],
-        }
-
-
-# Removed unused validation functions - table schema validation is handled by Spark
-
-
-def validate_batch_load(
-    spark: SparkSession,
-    table_name: str,
-    batch_id: str,
-    original_files: List[str],
-    expected_count: int,
-) -> Dict[str, Any]:
-    """
-    Enhanced validation using distributed operations that now work
-
-    Args:
-        spark: SparkSession for distributed operations
-        table_name: Name of the table to validate
-        batch_id: Unique batch identifier
-        original_files: List of original file paths that were processed
-        expected_count: Expected number of records to be loaded
-
-    Returns:
-        Dict[str, Any]: Validation result with file counts and status
-    """
-    print(f"\n🔍 Enhanced validation for batch {batch_id}...")
-
-    try:
-        # Use DataFrame API for better Spark Connect performance
-
-        # Load table as DataFrame
-        table_df = spark.table(table_name)
-
-        # Count loaded records using DataFrame API
-        loaded_records_df = table_df.filter(col("batch_id") == batch_id).agg(
-            count("*").alias("loaded_count")
-        )
-        loaded_count = loaded_records_df.take(1)[0]["loaded_count"]
-
-        # File analysis using DataFrame API
-        file_analysis_df = (
-            table_df.filter(col("batch_id") == batch_id)
-            .groupBy("file_path")
-            .agg(
-                count("*").alias("record_count"),
-                max_func("generated_at").alias("latest_record"),
-            )
-            .orderBy(col("record_count").desc())
-        )
-
-        file_analysis = file_analysis_df.take(100)
-
-        # Create lookup for loaded records
-        loaded_files = {record["file_path"]: record for record in file_analysis}
-
-        # Validate each original file
-        validation_result = {
-            "batch_id": batch_id,
-            "files_expected": len(original_files),
-            "files_loaded": len(loaded_files),
-            "files_missing": [],
-            "files_failed": [],
-            "files_successful": [],
-            "validation_status": "unknown",
-        }
-
-        for file_path in original_files:
-            file_name = file_path.split("/")[-1] if "/" in file_path else file_path
-
-            if file_name in loaded_files:
-                record = loaded_files[file_name]
-                # If record exists, consider it successfully loaded
-                validation_result["files_successful"].append(file_name)
-            else:
-                validation_result["files_missing"].append(file_name)
-
-        # Determine overall validation status
-        if (
-            len(validation_result["files_missing"]) == 0
-            and len(validation_result["files_failed"]) == 0
-        ):
-            validation_result["validation_status"] = "complete_success"
-        elif len(validation_result["files_missing"]) > 0:
-            validation_result["validation_status"] = "partial_load"
-        else:
-            validation_result["validation_status"] = "load_failures"
-
-        # Print enhanced validation summary
-        print(f"✅ Enhanced validation complete:")
-        print(f"   - Expected: {validation_result['files_expected']} files")
-        print(f"   - Loaded: {validation_result['files_loaded']} files")
-        print(f"   - Successful: {len(validation_result['files_successful'])} files")
-        print(f"   - Failed: {len(validation_result['files_failed'])} files")
-        print(f"   - Missing: {len(validation_result['files_missing'])} files")
-        print(f"   - Status: {validation_result['validation_status']}")
-        print(f"   - Total records: {loaded_count:,}")
-
-        return validation_result
-
-    except Exception as e:
-        print(f"❌ Enhanced validation failed: {e}")
-        return None
 
 
 def parse_logs_and_insert_metrics(
@@ -3001,63 +2076,6 @@ def validate_job_logs_metrics(metrics: Dict[str, Any]) -> bool:
         print(f"❌ STRICT VALIDATION FAILED: {str(e)}")
         print(f"❌ FAILED METRICS: {metrics}")
         return False
-
-
-def process_minio_file(
-    file_path: str,
-    minio_metadata: Dict[str, Any],
-    batch_id: str,
-) -> Dict[str, Any]:
-    """
-    Process file with UTC timestamp handling (Z suffix)
-
-    Args:
-        file_path: Path to the file to process
-        minio_metadata: Metadata dictionary from MinIO
-        batch_id: Unique batch identifier
-
-    Returns:
-        Dict[str, Any]: Processed document data or None if processing fails
-    """
-    try:
-        # Get UTC ISO-8601 string from metadata
-        generated_at = minio_metadata.get("generated_at", "")
-
-        # Parse for generation_date (TIMESTAMP) for partitioning
-        try:
-            # Handle Z suffix (convert to +00:00 for parsing)
-            if generated_at.endswith("Z"):
-                parse_string = generated_at.replace("Z", "+00:00")
-            else:
-                parse_string = generated_at
-
-            generation_date = datetime.fromisoformat(parse_string)
-
-            # Ensure it's UTC
-            if generation_date.tzinfo != timezone.utc:
-                generation_date = generation_date.astimezone(timezone.utc)
-
-        except Exception as e:
-            generation_date = datetime.now(timezone.utc)
-
-        document_data = {
-            "document_id": minio_metadata.get("document_id", ""),
-            "document_type": minio_metadata.get("document_type", ""),
-            "raw_text": "",
-            "generation_date": generation_date,  # UTC TIMESTAMP for partitioning
-            "file_path": file_path,
-            "language": "en",
-            "generated_at": generated_at,  # UTC ISO-8601 string with Z
-            "source": minio_metadata.get("source", "soli_legal_document_generator"),
-            "schema_version": SCHEMA_VERSION,
-            "load_batch_id": batch_id,
-            "load_timestamp": datetime.now(timezone.utc),
-        }
-
-        return document_data
-
-    except Exception as e:
-        return None
 
 
 def generate_job_id() -> str:
@@ -3737,675 +2755,34 @@ def validate_load(
         return None
 
 
-def _process_json_files_spark_sql(
-    spark: SparkSession,
-    json_files_path: str,
-    table_name: str,
-) -> Dict[str, Any]:
-    """
-    Process JSON files using Spark SQL native JSON functions for optimal performance
-
-    Args:
-        spark: SparkSession for distributed operations
-        json_files_path: Path to JSON files (supports glob patterns)
-        table_name: Target table name for insertion
-
-    Returns:
-        Dict[str, Any]: Processing results with metrics
-    """
-    try:
-        print(
-            f"🔄 Processing JSON files using Spark SQL native functions: {json_files_path}"
-        )
-
-        # Step 1: Read JSON files with schema inference
-        json_df = spark.read.option("multiline", "true").json(json_files_path)
-
-        # Step 2: Extract fields using Spark SQL JSON functions
-
-        # Define the expected schema for JSON parsing
-
-        json_schema = StructType(
-            [
-                StructField("document_id", StringType(), True),
-                StructField("document_type", StringType(), True),
-                StructField("raw_text", StringType(), True),
-                StructField(
-                    "generated_at", StringType(), True
-                ),  # Will be parsed to timestamp
-                StructField("source", StringType(), True),
-                StructField("language", StringType(), True),
-                StructField("schema_version", StringType(), True),
-                StructField("metadata_file_path", StringType(), True),
-                StructField("method", StringType(), True),
-                StructField("file_size", LongType(), True),
-            ]
-        )
-
-        # Step 3: Process JSON with native functions
-        processed_df = (
-            json_df.select(
-                # Extract fields using get_json_object for better performance
-                get_json_object(col("value"), "$.document_id").alias("document_id"),
-                get_json_object(col("value"), "$.document_type").alias("document_type"),
-                get_json_object(col("value"), "$.raw_text").alias("raw_text"),
-                get_json_object(col("value"), "$.generated_at").alias("generated_at"),
-                get_json_object(col("value"), "$.source").alias("source"),
-                get_json_object(col("value"), "$.language").alias("language"),
-                get_json_object(col("value"), "$.schema_version").alias(
-                    "schema_version"
-                ),
-                get_json_object(col("value"), "$.metadata_file_path").alias(
-                    "metadata_file_path"
-                ),
-                get_json_object(col("value"), "$.method").alias("method"),
-                get_json_object(col("value"), "$.file_size").alias("file_size"),
-                input_file_name().alias("file_path"),
-                current_timestamp().alias("created_at"),
-            )
-            .withColumn(
-                # Parse generated_at to timestamp
-                "generated_at",
-                when(
-                    col("generated_at").isNotNull(),
-                    col("generated_at").cast("timestamp"),
-                ).otherwise(current_timestamp()),
-            )
-            .withColumn(
-                # Add default values for missing fields
-                "document_id",
-                when(col("document_id").isNotNull(), col("document_id")).otherwise(
-                    lit("unknown")
-                ),
-            )
-            .withColumn(
-                "document_type",
-                when(col("document_type").isNotNull(), col("document_type")).otherwise(
-                    lit("unknown")
-                ),
-            )
-            .withColumn(
-                "source",
-                when(col("source").isNotNull(), col("source")).otherwise(
-                    lit("soli_legal_document_generator")
-                ),
-            )
-            .withColumn(
-                "language",
-                when(col("language").isNotNull(), col("language")).otherwise(lit("en")),
-            )
-            .withColumn(
-                "schema_version",
-                when(
-                    col("schema_version").isNotNull(), col("schema_version")
-                ).otherwise(lit(SCHEMA_VERSION)),
-            )
-            .withColumn(
-                "file_size",
-                when(col("file_size").isNotNull(), col("file_size")).otherwise(lit(0)),
-            )
-        )
-
-        # Step 4: Filter to only include columns that match the Iceberg table schema
-        table_columns = [
-            "document_id",
-            "document_type",
-            "generated_at",
-            "source",
-            "language",
-            "file_size",
-            "method",
-            "schema_version",
-            "metadata_file_path",
-            "raw_text",
-            "file_path",
-            "batch_id",
-            "job_id",
-        ]
-
-        # Add missing columns with default values
-        if "batch_id" not in processed_df.columns:
-            processed_df = processed_df.withColumn("batch_id", lit(""))
-        if "job_id" not in processed_df.columns:
-            processed_df = processed_df.withColumn("job_id", lit(""))
-
-        # Select only the table columns
-        final_df = processed_df.select(*table_columns)
-
-        # Step 5: Insert into Iceberg table
-        final_df.writeTo(table_name).append()
-
-        # Step 6: Calculate metrics
-        total_records = final_df.count()
-        successful_inserts = total_records  # All records processed successfully
-        failed_inserts = 0
-
-        print(f"✅ Successfully processed {total_records} JSON records using Spark SQL")
-
-        return {
-            "success": True,
-            "successful_inserts": successful_inserts,
-            "failed_inserts": failed_inserts,
-            "total_files_processed": total_records,
-            "success_rate": 1.0,
-            "processing_time_seconds": 0,  # Will be calculated by caller
-            "failed_files_by_partition": {},
-            "partition_metrics": {},
-        }
-
-    except Exception as e:
-        print(f"❌ Error processing JSON files with Spark SQL: {e}")
-        return {
-            "success": False,
-            "successful_inserts": 0,
-            "failed_inserts": 0,
-            "total_files_processed": 0,
-            "success_rate": 0.0,
-            "processing_time_seconds": 0,
-            "failed_files_by_partition": {},
-            "partition_metrics": {},
-            "error": str(e),
-        }
-
-
-def _process_json_files_hybrid(
-    spark: SparkSession,
-    json_files_path: str,
-    table_name: str,
-) -> Dict[str, Any]:
-    """
-    Hybrid approach: Use Spark SQL for schema inference, then process with native functions
-
-    Args:
-        spark: SparkSession for distributed operations
-        json_files_path: Path to JSON files (supports glob patterns)
-        table_name: Target table name for insertion
-
-    Returns:
-        Dict[str, Any]: Processing results with metrics
-    """
-    try:
-        print(f"🔄 Processing JSON files using hybrid approach: {json_files_path}")
-
-        # Step 1: Read JSON files and let Spark infer schema
-        json_df = spark.read.option("multiline", "true").json(json_files_path)
-
-        # Step 2: Add file path information
-
-        json_with_paths = json_df.withColumn("file_path", input_file_name())
-
-        # Step 3: Transform to match target schema
-        processed_df = json_with_paths.select(
-            col("document_id").alias("document_id"),
-            col("document_type").alias("document_type"),
-            col("raw_text").alias("raw_text"),
-            col("generated_at").cast("timestamp").alias("generated_at"),
-            col("source").alias("source"),
-            col("language").alias("language"),
-            col("file_size").alias("file_size"),
-            col("method").alias("method"),
-            col("schema_version").alias("schema_version"),
-            col("metadata_file_path").alias("metadata_file_path"),
-            col("file_path").alias("file_path"),
-            current_timestamp().alias("created_at"),
-        ).na.fill(
-            {
-                "document_id": "unknown",
-                "document_type": "unknown",
-                "source": "soli_legal_document_generator",
-                "language": "en",
-                "schema_version": SCHEMA_VERSION,
-                "file_size": 0,
-            }
-        )
-
-        # Step 4: Add missing columns
-        if "batch_id" not in processed_df.columns:
-            processed_df = processed_df.withColumn("batch_id", lit(""))
-        if "job_id" not in processed_df.columns:
-            processed_df = processed_df.withColumn("job_id", lit(""))
-
-        # Step 5: Select only table columns
-        table_columns = [
-            "document_id",
-            "document_type",
-            "generated_at",
-            "source",
-            "language",
-            "file_size",
-            "method",
-            "schema_version",
-            "metadata_file_path",
-            "raw_text",
-            "file_path",
-            "batch_id",
-            "job_id",
-        ]
-
-        final_df = processed_df.select(*table_columns)
-
-        # Step 6: Insert into Iceberg table
-        final_df.writeTo(table_name).append()
-
-        # Step 7: Calculate metrics
-        total_records = final_df.count()
-
-        print(
-            f"✅ Successfully processed {total_records} JSON records using hybrid approach"
-        )
-
-        return {
-            "success": True,
-            "successful_inserts": total_records,
-            "failed_inserts": 0,
-            "total_files_processed": total_records,
-            "success_rate": 1.0,
-            "processing_time_seconds": 0,
-            "failed_files_by_partition": {},
-            "partition_metrics": {},
-        }
-
-    except Exception as e:
-        print(f"❌ Error processing JSON files with hybrid approach: {e}")
-        return {
-            "success": False,
-            "successful_inserts": 0,
-            "failed_inserts": 0,
-            "total_files_processed": 0,
-            "success_rate": 0.0,
-            "processing_time_seconds": 0,
-            "failed_files_by_partition": {},
-            "partition_metrics": {},
-            "error": str(e),
-        }
-
-
 def merge_to_iceberg_table(
     spark: SparkSession,
     source_df,
     table_name: str,
     merge_key: str = "document_id",
-    partition_by: str = "document_type",
 ) -> bool:
+    # Register a unique temp view
+    temp_view = "temp_merge_view"
+    source_df.createOrReplaceTempView(temp_view)
+    columns = source_df.columns
+
+    # Exclude only the merge key from UPDATE SET (all other columns are now deterministic)
+    update_columns = [col for col in columns if col != merge_key]
+    set_clause = ",\n  ".join([f"{col} = s.{col}" for col in update_columns])
+    insert_cols = ", ".join(columns)
+    insert_vals = ", ".join([f"s.{col}" for col in columns])
+    merge_sql = f"""
+    MERGE INTO {table_name} t
+    USING {temp_view} s
+    ON t.{merge_key} = s.{merge_key}
+    WHEN MATCHED THEN UPDATE SET
+      {set_clause}
+    WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})
     """
-    Perform Iceberg merge operation with uniqueness constraints
-
-    Args:
-        spark: SparkSession
-        source_df: DataFrame to merge
-        table_name: Target Iceberg table name
-        merge_key: Column to use for uniqueness (default: document_id)
-        partition_by: Column to partition by (default: document_type)
-
-    Returns:
-        bool: True if merge successful
-    """
-    try:
-        # Use proper Iceberg MERGE operation with whenMatched/whenNotMatched
-        # This ensures true upsert behavior with proper conflict resolution
-        source_df.writeTo(table_name).mergeOn(
-            merge_key
-        ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
-
-        print(f"✅ Successfully merged data to {table_name} with proper upsert logic")
-        return True
-
-    except Exception as e:
-        print(f"❌ Error merging to {table_name}: {e}")
-        return False
-
-
-def _insert_files_with_partition_tracking(
-    spark: SparkSession,
-    file_groups: Dict[str, List[str]],
-    table_name: str,
-    observability_logger: HybridLogger,
-) -> Dict[str, Any]:
-    """
-    Process files with Spark partition tracking using distributed processing
-
-    Args:
-        spark: SparkSession for data processing
-        file_groups: Dictionary mapping file types to lists of file paths
-        table_name: Target table name for insertion
-        observability_logger: HybridLogger instance for metrics and monitoring
-
-    Returns:
-        Dict[str, Any]: Processing results with detailed failure information
-    """
-    print("🔄 Using distributed partition tracking for ELT")
-
-    # Validate required parameters
-    if observability_logger is None:
-        raise ValueError(
-            "❌ Observability logger is required for metrics and monitoring"
-        )
-
-    # Start operation tracking
-    observability_logger.start_operation(
-        "partition_tracking", "insert_files_with_partition_tracking"
-    )
-
-    job_start_time = time.time()
-    all_source_files = []
-
-    # Collect all files for processing
-    all_files = []
-    for format_type, files in file_groups.items():
-        if files:
-            all_files.extend(files)
-
-    if not all_files:
-        print("⚠️ No files to process")
-        return {
-            "success": True,
-            "successful_inserts": 0,
-            "failed_inserts": 0,
-            "failed_files_by_partition": {},
-            "partition_metrics": {},
-            "processing_time_seconds": 0,
-        }
-
-    print(f"📊 Processing {len(all_files)} files using distributed approach")
-
-    try:
-        # Define UDFs for document extraction
-        def extract_document_id_udf(file_path):
-            if not file_path:
-                return "unknown"
-            filename = file_path.split("/")[-1]
-            return (
-                filename.replace(".txt", "")
-                .replace(".json", "")
-                .replace(".parquet", "")
-            )
-
-        def extract_document_type_udf(file_path):
-            if not file_path:
-                return "unknown"
-            filename = file_path.split("/")[-1]
-            parts = (
-                filename.replace(".txt", "")
-                .replace(".json", "")
-                .replace(".parquet", "")
-                .split("_")
-            )
-            return parts[3] if len(parts) >= 4 else "unknown"
-
-        # Register UDFs
-        extract_id_udf = udf(extract_document_id_udf, StringType())
-        extract_type_udf = udf(extract_document_type_udf, StringType())
-
-        # Group files by type for efficient processing
-        text_files = [f for f in all_files if str(f).endswith(".txt")]
-        json_files = [f for f in all_files if str(f).endswith(".json")]
-        parquet_files = [f for f in all_files if str(f).endswith(".parquet")]
-
-        successful_inserts = 0
-        failed_inserts = 0
-        failed_files_by_partition = {}
-
-        # Process text files in batch using Spark's text reading
-        if text_files:
-            print(f"📄 Processing {len(text_files)} text files")
-            try:
-                # Use Spark's native text reading for distributed processing
-                text_paths = [str(f) for f in text_files]
-                text_df = spark.read.text(text_paths)
-
-                # Add file metadata
-                text_processed = (
-                    text_df.withColumn("file_path", input_file_name())
-                    .withColumn("document_id", extract_id_udf(input_file_name()))
-                    .withColumn("document_type", extract_type_udf(input_file_name()))
-                    .withColumn("language", lit("en"))
-                    .withColumn("generated_at", current_timestamp())
-                    .withColumn("source", lit("soli_legal_document_generator"))
-                    .withColumn("schema_version", lit(SCHEMA_VERSION))
-                    .withColumn("metadata_file_path", lit(""))
-                    .withColumn("method", lit("spark_text_reader"))
-                    .withColumn("file_size", lit(0))
-                    .withColumn("raw_text", concat_ws("\n", col("value")))
-                    .withColumn("batch_id", lit(""))
-                    .withColumn("job_id", lit(""))
-                )
-
-                # Select only columns that match the table schema
-                text_final = text_processed.select(
-                    "document_id",
-                    "document_type",
-                    "generated_at",
-                    "source",
-                    "language",
-                    "file_size",
-                    "method",
-                    "schema_version",
-                    "metadata_file_path",
-                    "raw_text",
-                    "file_path",
-                    "batch_id",
-                    "job_id",
-                )
-
-                # Merge text files (ensures uniqueness by document_id)
-                text_final.writeTo(table_name).overwritePartitions()
-                successful_inserts += len(text_files)
-                print(f"✅ Successfully processed {len(text_files)} text files")
-
-            except Exception as e:
-                print(f"❌ Error processing text files: {e}")
-                failed_inserts += len(text_files)
-                # Track failures by partition
-                shuffle_partitions = 4
-                for i, file_path in enumerate(text_files):
-                    partition_id = i % shuffle_partitions
-                    if partition_id not in failed_files_by_partition:
-                        failed_files_by_partition[partition_id] = []
-
-                    failed_files_by_partition[partition_id].append(
-                        {
-                            "file_path": str(file_path),
-                            "document_id": extract_document_id_udf(str(file_path)),
-                            "document_type": extract_document_type_udf(str(file_path)),
-                            "error_message": str(e),
-                            "error_code": "E001",
-                            "record_size_bytes": 0,
-                            "partition_id": partition_id,
-                            "failure_timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-
-        # Process JSON files in batch
-        if json_files:
-            print(f"📄 Processing {len(json_files)} JSON files")
-            try:
-                # Use Spark's native JSON reading
-                json_paths = [str(f) for f in json_files]
-                json_df = spark.read.option("multiline", "true").json(json_paths)
-
-                # Debug: Print schema to understand JSON structure
-                print(f"📊 JSON schema: {json_df.schema}")
-                print(f"📊 JSON sample: {json_df.limit(1).toPandas()}")
-
-                # Add file metadata and extract content
-                json_processed = (
-                    json_df.withColumn("file_path", input_file_name())
-                    .withColumn("document_id", extract_id_udf(input_file_name()))
-                    .withColumn("document_type", extract_type_udf(input_file_name()))
-                    .withColumn("raw_text", lit(""))
-                    .withColumn("language", lit("en"))
-                    .withColumn("generated_at", current_timestamp())
-                    .withColumn("source", lit("soli_legal_document_generator"))
-                    .withColumn("schema_version", lit(SCHEMA_VERSION))
-                    .withColumn("metadata_file_path", lit(""))
-                    .withColumn("method", lit("spark_json_reader"))
-                    .withColumn("file_size", lit(0))
-                    .withColumn("batch_id", lit(""))
-                    .withColumn("job_id", lit(""))
-                )
-
-                # Select only columns that match the table schema
-                json_final = json_processed.select(
-                    "document_id",
-                    "document_type",
-                    "generated_at",
-                    "source",
-                    "language",
-                    "file_size",
-                    "method",
-                    "schema_version",
-                    "metadata_file_path",
-                    "raw_text",
-                    "file_path",
-                    "batch_id",
-                    "job_id",
-                )
-
-                # Merge JSON files (ensures uniqueness by document_id)
-                json_final.writeTo(table_name).overwritePartitions()
-                successful_inserts += len(json_files)
-                print(f"✅ Successfully processed {len(json_files)} JSON files")
-
-            except Exception as e:
-                print(f"❌ Error processing JSON files: {e}")
-                failed_inserts += len(json_files)
-                # Track failures by partition
-                shuffle_partitions = 4
-                for i, file_path in enumerate(json_files):
-                    partition_id = i % shuffle_partitions
-                    if partition_id not in failed_files_by_partition:
-                        failed_files_by_partition[partition_id] = []
-
-                    failed_files_by_partition[partition_id].append(
-                        {
-                            "file_path": str(file_path),
-                            "document_id": extract_document_id_udf(str(file_path)),
-                            "document_type": extract_document_type_udf(str(file_path)),
-                            "error_message": str(e),
-                            "error_code": "E002",
-                            "record_size_bytes": 0,
-                            "partition_id": partition_id,
-                            "failure_timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-
-        # Process Parquet files in batch
-        if parquet_files:
-            print(f"📄 Processing {len(parquet_files)} Parquet files")
-            try:
-                # Use Spark's native Parquet reading
-                parquet_paths = [str(f) for f in parquet_files]
-                parquet_df = spark.read.parquet(parquet_paths)
-
-                # Add file metadata
-                parquet_processed = (
-                    parquet_df.withColumn("file_path", input_file_name())
-                    .withColumn("document_id", extract_id_udf(input_file_name()))
-                    .withColumn("document_type", extract_type_udf(input_file_name()))
-                    .withColumn("raw_text", lit(""))
-                    .withColumn("language", lit("en"))
-                    .withColumn("generated_at", current_timestamp())
-                    .withColumn("source", lit("soli_legal_document_generator"))
-                    .withColumn("schema_version", lit(SCHEMA_VERSION))
-                    .withColumn("metadata_file_path", lit(""))
-                    .withColumn("method", lit("spark_parquet_reader"))
-                    .withColumn("file_size", lit(0))
-                    .withColumn("batch_id", lit(""))
-                    .withColumn("job_id", lit(""))
-                )
-
-                # Select only columns that match the table schema
-                parquet_final = parquet_processed.select(
-                    "document_id",
-                    "document_type",
-                    "generated_at",
-                    "source",
-                    "language",
-                    "file_size",
-                    "method",
-                    "schema_version",
-                    "metadata_file_path",
-                    "raw_text",
-                    "file_path",
-                    "batch_id",
-                    "job_id",
-                )
-
-                # Merge Parquet files (ensures uniqueness by document_id)
-                parquet_final.writeTo(table_name).overwritePartitions()
-                successful_inserts += len(parquet_files)
-                print(f"✅ Successfully processed {len(parquet_files)} Parquet files")
-
-            except Exception as e:
-                print(f"❌ Error processing Parquet files: {e}")
-                failed_inserts += len(parquet_files)
-                # Track failures by partition
-                shuffle_partitions = 4
-                for i, file_path in enumerate(parquet_files):
-                    partition_id = i % shuffle_partitions
-                    if partition_id not in failed_files_by_partition:
-                        failed_files_by_partition[partition_id] = []
-
-                    failed_files_by_partition[partition_id].append(
-                        {
-                            "file_path": str(file_path),
-                            "document_id": extract_document_id_udf(str(file_path)),
-                            "document_type": extract_document_type_udf(str(file_path)),
-                            "error_message": str(e),
-                            "error_code": "E003",
-                            "record_size_bytes": 0,
-                            "partition_id": partition_id,
-                            "failure_timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-
-        # Calculate processing time
-        processing_time_seconds = time.time() - job_start_time
-
-        # Use fixed partition count matching spark-defaults.conf
-        shuffle_partitions = 4
-
-        # Calculate partition metrics
-        partition_metrics = {
-            "total_partitions": 4,
-            "files_per_partition": len(all_files) // 4 if len(all_files) > 0 else 0,
-            "processing_time_seconds": processing_time_seconds,
-            "success_rate": successful_inserts / len(all_files) if all_files else 0,
-        }
-
-        print(f"✅ Distributed processing complete:")
-        print(f"   - Total files: {len(all_files)}")
-        print(f"   - Successful: {successful_inserts}")
-        print(f"   - Failed: {failed_inserts}")
-        print(f"   - Processing time: {processing_time_seconds:.2f}s")
-        print(f"   - Success rate: {partition_metrics['success_rate']:.2%}")
-        print(f"   - Shuffle partitions: 4")
-        print(f"   - Files per partition: {partition_metrics['files_per_partition']}")
-
-        return {
-            "success": failed_inserts == 0,
-            "successful_inserts": successful_inserts,
-            "failed_inserts": failed_inserts,
-            "failed_files_by_partition": failed_files_by_partition,
-            "partition_metrics": partition_metrics,
-            "processing_time_seconds": processing_time_seconds,
-        }
-
-    except Exception as e:
-        print(f"❌ Error in distributed partition tracking: {e}")
-        processing_time_seconds = time.time() - job_start_time
-
-        return {
-            "success": False,
-            "successful_inserts": 0,
-            "failed_inserts": len(all_files),
-            "failed_files_by_partition": {},
-            "partition_metrics": {
-                "processing_time_seconds": processing_time_seconds,
-                "error": str(e),
-            },
-            "processing_time_seconds": processing_time_seconds,
-        }
+    # No try/except: fail fast
+    spark.sql(merge_sql)
+    print(f"✅ Successfully merged data to {table_name} with SQL MERGE INTO")
+    return True
 
 
 def _get_executor_count(spark: SparkSession) -> int:
@@ -4450,14 +2827,6 @@ def _get_driver_memory_mb(spark: SparkSession) -> int:
     except Exception:
         # Fallback to fixed value for Spark Connect
         return 6144  # 6GB in MB
-
-
-def _load_valid_document_types():
-    """Load and cache valid document types once"""
-    global _VALID_DOCUMENT_TYPES
-    if not _VALID_DOCUMENT_TYPES:
-        _VALID_DOCUMENT_TYPES = set(schema_manager.get_document_types())
-    return _VALID_DOCUMENT_TYPES
 
 
 if __name__ == "__main__":

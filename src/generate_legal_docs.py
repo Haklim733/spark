@@ -283,8 +283,8 @@ def save_documents_to_minio(
     key: str = "docs/legal",
 ) -> None:
     """
-    Save documents as individual text files with separate JSON metadata files in MinIO.
-    Structure: {key}/{document_type}/{date}/{uuid}.txt + {uuid}.json
+    Save documents with separate content and metadata directories in MinIO.
+    Structure: {key}/{document_type}/{date}/content/{uuid}.txt + metadata/{uuid}.json
 
     Args:
         documents: List of document dictionaries
@@ -309,13 +309,13 @@ def save_documents_to_minio(
         doc_type = doc["document_type"]
         doc_id = doc["document_id"]
 
-        # Create file paths
+        # Create file paths with separate content and metadata directories
         content_filename = f"{doc_id}.txt"
         metadata_filename = f"{doc_id}.json"
 
-        # Build full paths within the bucket
-        content_path = f"{key}/{doc_type}/{current_date}/{content_filename}"
-        metadata_path = f"{key}/{doc_type}/{current_date}/{metadata_filename}"
+        # Build full paths within the bucket with separate directories
+        content_path = f"{key}/{doc_type}/{current_date}/content/{content_filename}"
+        metadata_path = f"{key}/{doc_type}/{current_date}/metadata/{metadata_filename}"
 
         # Prepare content
         content = doc["content"]
@@ -372,7 +372,7 @@ def save_documents_to_minio(
     print(f"\nSuccessfully saved {total_saved} text files to MinIO")
     print(f"Successfully saved {total_metadata_saved} metadata files to MinIO")
     print(
-        f"Structure: s3a://{bucket_name}/{key}/{{doc_type}}/{current_date}/{{uuid}}.txt + .json"
+        f"Structure: s3a://{bucket_name}/{key}/{{doc_type}}/{current_date}/content/{{uuid}}.txt + metadata/{{uuid}}.json"
     )
     print(f"Date directory: {current_date}")
 

@@ -1,18 +1,13 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Comprehensive Job and Batch Metrics Schema for ELT Pipeline",
-  "description": "Schema capturing ALL metrics from HybridLogger: job-level, batch-level, operation-level, performance, business events, errors, and custom metrics",
-  "schema_version": "v2",
+  "title": "Comprehensive Job and Spark Partition Metrics Schema for ELT Pipeline",
+  "description": "Schema capturing ALL metrics from HybridLogger: job-level, partition-level, operation-level, performance, business events, errors, and custom metrics with Spark-native partitioning",
+  "schema_version": "v3",
   "type": "object",
   "properties": {
     "job_id": {
       "type": "string",
-      "description": "Job/process identifier from HybridLogger"
-    },
-    "batch_id": {
-      "type": "string",
-      "pattern": "^[a-zA-Z0-9_-]+$",
-      "description": "Unique batch identifier within the job"
+      "description": "Unique job identifier for the entire application run (HybridLogger job_id)"
     },
     "source": {
       "type": "string",
@@ -39,17 +34,6 @@
       "description": "When the entire job/application completed (HybridLogger shutdown)"
     },
     
-    "batch_start": {
-      "type": "string",
-      "format": "date-time",
-      "description": "When this specific batch processing started"
-    },
-    "batch_end": {
-      "type": "string",
-      "format": "date-time",
-      "description": "When this specific batch processing completed"
-    },
-    
     "operation_name": {
       "type": "string",
       "description": "Name of the operation being tracked (from HybridLogger start_operation/end_operation)"
@@ -70,52 +54,31 @@
       "description": "Number of results from the operation"
     },
     
-    "files_processed": {
+    "records_processed": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total number of files attempted to process in this batch"
+      "description": "Total number of individual records processed across all files in this partition"
     },
-    "files_loaded": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "Number of files successfully loaded into the target table"
-    },
-    "files_failed": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "Number of files that failed to load"
-    },
-    "files_missing": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "Number of files that were expected but not found"
-    },
-    
-    "total_records_processed": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "Total number of individual records processed across all files"
-    },
-    "total_records_loaded": {
+    "records_loaded": {
       "type": "integer",
       "minimum": 0,
       "description": "Total number of individual records successfully loaded"
     },
-    "total_records_failed": {
+    "records_failed": {
       "type": "integer",
       "minimum": 0,
       "description": "Total number of individual records that failed to load"
     },
-    "total_records_missing": {
+    "records_missing": {
       "type": "integer",
       "minimum": 0,
       "description": "Total number of individual records that were expected but not found"
     },
     
-    "total_file_size_bytes": {
+    "record_size_bytes": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total size of all files processed in bytes"
+      "description": "Total size of all records processed in bytes"
     },
     "bytes_transferred": {
       "type": "integer",
@@ -135,6 +98,63 @@
       "type": "integer",
       "minimum": 0,
       "description": "Timestamp from performance metrics"
+    },
+    
+    "partition_processing_metrics": {
+      "type": "object",
+      "properties": {
+        "partition_id": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Spark partition ID where the data was processed (spark_partition_id())"
+        },
+        "partition_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Total number of Spark partitions used for this processing"
+        },
+        "partition_size": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of files/records in this specific partition"
+        },
+        "partition_total_size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total size of all files in this partition in bytes"
+        },
+        "partition_skew_ratio": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Ratio indicating partition skew (0.0 = perfectly balanced, 1.0 = highly skewed)"
+        },
+        "partition_start": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this specific partition processing started"
+        },
+        "partition_end": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this specific partition processing completed"
+        },
+        "partition_processing_time_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Time spent processing this specific partition (manually tracked)"
+        }
+      },
+      "required": [
+        "partition_id",
+        "partition_count",
+        "partition_size",
+        "partition_total_size_bytes",
+        "partition_start",
+        "partition_end",
+        "partition_processing_time_ms"
+      ],
+      "description": "Partition-specific processing metrics (only metrics that can be reliably captured)"
     },
     
     "business_events_count": {
@@ -175,17 +195,59 @@
       "description": "Types of errors encountered"
     },
     
-    "custom_metrics_count": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "Number of custom metrics logged (HybridLogger log_custom_metrics)"
-    },
-    "custom_operation_names": {
-      "type": "array",
-      "items": {
-        "type": "string"
+    "failed_files_by_partition": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string",
+              "description": "Path to the failed file"
+            },
+            "document_id": {
+              "type": "string",
+              "description": "Document ID extracted from the file"
+            },
+            "document_type": {
+              "type": "string",
+              "description": "Type of document that failed"
+            },
+            "error_message": {
+              "type": "string",
+              "description": "Specific error message for this file"
+            },
+            "error_code": {
+              "type": "string",
+              "description": "Error code for this failure"
+            },
+            "record_size_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Size of the failed file in bytes"
+            },
+            "partition_id": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Spark partition ID where the file was processed"
+            },
+            "failure_timestamp": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When this file failed processing"
+            }
+          },
+          "required": [
+            "file_path",
+            "error_message",
+            "error_code",
+            "partition_id",
+            "failure_timestamp"
+          ]
+        }
       },
-      "description": "Names of custom operations tracked"
+      "description": "Detailed mapping of partition IDs to lists of failed files with their specific error information"
     },
     
     "total_logs_generated": {
@@ -201,12 +263,57 @@
     "validation_status": {
       "type": "string",
       "enum": ["complete_success", "partial_load", "load_failures", "unknown"],
-      "description": "Overall validation status of the batch"
+      "description": "Overall validation status of the partition"
     },
     "job_status": {
       "type": "string",
       "enum": ["success", "failed", "partial_success"],
       "description": "Overall job status"
+    },
+    
+    "spark_metrics": {
+      "type": "object",
+      "properties": {
+        "executor_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of Spark executors used"
+        },
+        "executor_memory_mb": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Memory allocated per executor in MB"
+        },
+        "driver_memory_mb": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Memory allocated to driver in MB"
+        },
+        "spark_version": {
+          "type": "string",
+          "description": "Spark version used"
+        },
+        "iceberg_version": {
+          "type": "string",
+          "description": "Iceberg version used"
+        },
+        "shuffle_read_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total shuffle read bytes"
+        },
+        "shuffle_write_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total shuffle write bytes"
+        },
+        "total_executor_time_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total executor time across all partitions"
+        }
+      },
+      "description": "Spark-specific metrics and configuration"
     },
     
     "created_by": {
@@ -221,23 +328,16 @@
   },
   "required": [
     "job_id",
-    "batch_id",
     "source",
     "target_table",
     "version",
     "job_start",
     "job_end",
-    "batch_start",
-    "batch_end",
-    "files_processed",
-    "files_loaded",
-    "files_failed",
-    "files_missing",
-    "total_records_processed",
-    "total_records_loaded",
-    "total_records_failed",
-    "total_records_missing",
-    "total_file_size_bytes",
+    "records_processed",
+    "records_loaded",
+    "records_failed",
+    "records_missing",
+    "record_size_bytes",
     "bytes_transferred",
     "error_codes",
     "error_summary",

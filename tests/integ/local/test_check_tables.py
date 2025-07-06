@@ -6,13 +6,16 @@ This tests that Python code can run locally while connecting to remote Spark clu
 
 import pytest
 from src.check_tables import check_namespace_tables
-from src.utils import create_spark_connect_session
+from src.utils import create_spark_session, SparkVersion
 
 
 @pytest.fixture(scope="class")
 def spark_connect_session():
     """Create Spark Connect session"""
-    spark = create_spark_connect_session("CheckTablesSparkConnectTest")
+    spark = create_spark_session(
+        app_name="CheckTablesSparkConnectTest",
+        spark_version=SparkVersion.SPARK_CONNECT_3_5,
+    )
     yield spark
     spark.stop()
 
@@ -187,7 +190,10 @@ def test_standalone_check_tables():
     """Test standalone check_tables functionality without fixtures"""
     print("=== STANDALONE CHECK TABLES TEST ===")
     try:
-        spark = create_spark_connect_session("StandaloneCheckTablesTest")
+        spark = create_spark_session(
+            app_name="StandaloneCheckTablesTest",
+            spark_version=SparkVersion.SPARK_CONNECT_3_5,
+        )
 
         # Test basic functionality
         databases = spark.sql("SHOW DATABASES;")

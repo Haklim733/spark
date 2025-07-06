@@ -15,8 +15,12 @@ from pyspark.sql.types import (
     DoubleType,
 )
 
-from pyspark.errors.exceptions.base import PySparkNotImplementedError
-from src.utils import create_spark_connect_session, IcebergConfig, S3FileSystemConfig
+from src.utils import (
+    create_spark_session,
+    IcebergConfig,
+    S3FileSystemConfig,
+    SparkVersion,
+)
 
 
 @pytest.fixture(scope="class")
@@ -34,8 +38,10 @@ def spark_connect_iceberg_session():
     # Create Iceberg configuration
     iceberg_config = IcebergConfig(s3_config)
 
-    spark = create_spark_connect_session(
-        "SparkConnectIcebergTest", iceberg_config=iceberg_config
+    spark = create_spark_session(
+        app_name="SparkConnectIcebergTest",
+        spark_version=SparkVersion.SPARK_CONNECT_3_5,
+        iceberg_config=iceberg_config,
     )
     yield spark
     spark.stop()

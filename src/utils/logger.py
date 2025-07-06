@@ -9,43 +9,10 @@ import os
 import glob
 from typing import Dict, Any, Optional
 from pyspark.sql import SparkSession
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
-
-
-# Helper function to create SparkSession (assuming it's defined elsewhere or mocked)
-def create_spark_session(
-    app_name: str, s3_config: Optional[dict] = None, **kwargs
-) -> SparkSession:
-    """
-    Creates and configures a SparkSession.
-    This is a placeholder and should be implemented according to your Spark environment.
-    """
-    print(f"Creating SparkSession for {app_name} with config: {kwargs}")
-    builder = SparkSession.builder.appName(app_name)
-
-    # Apply general Spark configs
-    for key, value in kwargs.items():
-        builder = builder.config(key, value)
-
-    # Apply S3 configs if provided
-    if s3_config:
-        builder = (
-            builder.config(
-                "spark.hadoop.fs.s3a.access.key", s3_config.get("access_key")
-            )
-            .config("spark.hadoop.fs.s3a.secret.key", s3_config.get("secret_key"))
-            .config("spark.hadoop.fs.s3a.endpoint", s3_config.get("endpoint"))
-            .config("spark.hadoop.fs.s3a.path.style.access", "true")
-            .config(
-                "spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem"
-            )
-            .config(
-                "spark.hadoop.fs.s3a.connection.ssl.enabled", "false"
-            )  # Adjust for https if needed
-        )
-
-    return builder.getOrCreate()
+import traceback  # Moved import to top-level for consistency, as it's used in log_error
+from src.utils.session import create_spark_session
 
 
 class MetricsTracker:
@@ -270,6 +237,9 @@ class HybridLogger:
         # Setup Python logger (used by both sync and async paths)
         self.python_logger = self._setup_python_logger()
 
+        # Flag to indicate if we are currently in shutdown process
+        self._is_shutting_down = False
+
         if enable_async:
             self.log_queue = queue.Queue(maxsize=buffer_size)
             self.flush_interval = flush_interval
@@ -304,10 +274,10 @@ class HybridLogger:
                 start_batch_time = time.time()
 
                 # Collect logs for flushing or until timeout
+                # Also stop collecting if shutdown is initiated
                 while (
-                    len(logs_to_process)
-                    < self.log_queue.maxsize
-                    // 10  # Process up to 10% of buffer at once
+                    self.running  # Added self.running check here
+                    and len(logs_to_process) < self.log_queue.maxsize // 10
                     and (time.time() - start_batch_time) < self.flush_interval
                 ):
                     try:
@@ -321,21 +291,32 @@ class HybridLogger:
                     if isinstance(log_entry, tuple) and len(log_entry) == 2:
                         log_type, data = log_entry
                         # Log structured data directly as JSON to the Python file handler
-                        self.python_logger.info(
-                            f"{log_type.upper()}: {json.dumps(data)}"
-                        )
+                        if self._is_shutting_down:
+                            print(
+                                f"HybridLogger: {log_type.upper()}: {json.dumps(data)}",
+                                flush=True,
+                            )
+                        else:
+                            self.python_logger.info(
+                                f"{log_type.upper()}: {json.dumps(data)}"
+                            )
                     else:
                         # Log plain string messages
-                        self.python_logger.info(str(log_entry))
+                        if self._is_shutting_down:
+                            print(f"HybridLogger: {str(log_entry)}", flush=True)
+                        else:
+                            self.python_logger.info(str(log_entry))
                     self.log_queue.task_done()
 
                 # Sleep if nothing was processed to prevent busy-waiting
-                if not logs_to_process:
+                if not logs_to_process and self.running:  # Only sleep if still running
                     time.sleep(0.01)
 
             except Exception as e:
                 # Log errors in the async worker to the console or a fallback logger
                 print(f"HybridLogger: Async logging worker error: {e}", flush=True)
+                # If an error occurs, it might be safer to stop to prevent repeated errors
+                self.running = False
 
     def _setup_python_logger(self) -> logging.Logger:
         """
@@ -397,6 +378,9 @@ class HybridLogger:
         """
         Helper to log structured data to Spark JVM (Log4j2) or fallback to Python.
         """
+        # If we are in shutdown, use print for Python fallback to avoid closed file issues
+        use_print_fallback = self._is_shutting_down
+
         # Ensure timestamp is always included
         if "timestamp" not in structured_data:
             structured_data["timestamp"] = int(time.time() * 1000)
@@ -418,12 +402,21 @@ class HybridLogger:
                     jvm_logger.error(log_message)
                 # Add other levels (debug, warn) if needed
             except Exception as e:
-                self.python_logger.error(
-                    f"Failed to log to Spark JVM (logger: {logger_name}): {e} - Data: {log_message}"
-                )
+                if use_print_fallback:
+                    print(
+                        f"HybridLogger: Fallback due to JVM log failure during shutdown (logger: {logger_name}): {e} - Data: {log_message}",
+                        flush=True,
+                    )
+                else:
+                    self.python_logger.error(
+                        f"Failed to log to Spark JVM (logger: {logger_name}): {e} - Data: {log_message}"
+                    )
         else:
             # Fallback to Python logger with a prefix for clarity
-            self.python_logger.info(f"{logger_name.upper()}: {log_message}")
+            if use_print_fallback:
+                print(f"HybridLogger: {logger_name.upper()}: {log_message}", flush=True)
+            else:
+                self.python_logger.info(f"{logger_name.upper()}: {log_message}")
 
     def log_performance(self, operation: str, metrics: Dict[str, Any]):
         """
@@ -433,6 +426,7 @@ class HybridLogger:
             "operation": operation,
             **metrics,
         }
+        # Call _log_to_jvm_or_python which handles shutdown state
         self._log_to_jvm_or_python("PERFORMANCE_METRICS", structured_metrics, "info")
         self.log_count += 1
 
@@ -444,7 +438,9 @@ class HybridLogger:
             "event_type": event_type,
             **event_data,
         }
-        if self.enable_async:
+        if (
+            self.enable_async and not self._is_shutting_down
+        ):  # Don't queue new logs if shutting down
             try:
                 # Queue the structured data as a tuple (type, data)
                 self.log_queue.put_nowait(("business_event", structured_event))
@@ -453,6 +449,7 @@ class HybridLogger:
                 pass
         else:
             # Fallback to synchronous logging, but still use the helper for consistency
+            # _log_to_jvm_or_python handles print fallback during shutdown
             self._log_to_jvm_or_python("BUSINESS_EVENT", structured_event, "info")
         self.log_count += 1
 
@@ -465,15 +462,24 @@ class HybridLogger:
             "message": message,
             "data": data if data is not None else {},
         }
-        if self.enable_async:
+        if (
+            self.enable_async and not self._is_shutting_down
+        ):  # Don't queue new logs if shutting down
             try:
                 # Queue debug messages as plain strings (or structured if preferred)
                 self.log_queue.put_nowait(f"DEBUG: {json.dumps(structured_debug)}")
             except queue.Full:
                 pass  # Drop debug logs if queue is full
         else:
-            # Synchronous Python debug log
-            self.python_logger.debug(f"DEBUG: {json.dumps(structured_debug)}")
+            # Synchronous Python debug log. Use standard Python logger's debug
+            # because this is primarily for development/deep inspection.
+            # Avoids _log_to_jvm_or_python for debug to keep it python-centric.
+            if self._is_shutting_down:
+                print(
+                    f"HybridLogger: DEBUG: {json.dumps(structured_debug)}", flush=True
+                )
+            else:
+                self.python_logger.debug(f"DEBUG: {json.dumps(structured_debug)}")
 
     def log_error(self, error: Exception, context: Optional[Dict[str, Any]] = None):
         """
@@ -488,6 +494,7 @@ class HybridLogger:
             error_data.update(context)
 
         # Always log errors synchronously to Python logger and JVM if available
+        # _log_to_jvm_or_python handles print fallback during shutdown
         self._log_to_jvm_or_python("ERROR", error_data, "error")
 
     def log_custom_metrics(
@@ -502,6 +509,7 @@ class HybridLogger:
             "Operation": operation,
             "Metrics": metrics,
         }
+        # Call _log_to_jvm_or_python which handles shutdown state
         self._log_to_jvm_or_python("CUSTOM_METRICS", custom_metrics_event, "info")
         self.log_count += 1
 
@@ -522,6 +530,7 @@ class HybridLogger:
             "Execution Time": round(execution_time, 2),
             "Result Count": result_count,
         }
+        # Call _log_to_jvm_or_python which handles shutdown state
         self._log_to_jvm_or_python("CUSTOM_COMPLETION", completion_event, "info")
         self.log_count += 1
 
@@ -546,6 +555,7 @@ class HybridLogger:
         """
         Force sync logs to external storage (placeholder for MinIO/S3).
         """
+        # This call is from outside, so it should use python_logger if not shutting down
         return self.sync_logs_to_external_storage(force_sync=True)
 
     def get_performance_summary(self) -> Dict[str, Any]:
@@ -567,18 +577,22 @@ class HybridLogger:
         """
         Gracefully shuts down the logger, metrics tracker, and Spark session.
         """
-        self.python_logger.info(
-            f"HybridLogger shutdown initiated for app: {self.app_name}"
-        )
+        # Set shutdown flag immediately to prevent new logs from being queued
+        self._is_shutting_down = True
+
+        # Use print instead of logger during shutdown to avoid closed file issues
+        print(f"HybridLogger shutdown initiated for app: {self.app_name}")
 
         # 1. Final log sync (if enabled and if there's an actual sync mechanism)
         if self.enable_log_sync:
             try:
-                # Placeholder for actual sync logic
-                sync_results = self.sync_logs_to_external_storage(force_sync=True)
-                self.log_performance("final_log_sync", sync_results)
+                # Pass a flag to sync_logs_to_external_storage to use print
+                sync_results = self.sync_logs_to_external_storage(
+                    force_sync=True, during_shutdown=True
+                )
+                print(f"Final log sync completed: {sync_results}")
             except Exception as e:
-                self.log_error(e, {"operation": "final_log_sync_error"})
+                print(f"Error during final log sync: {e}")
 
         # 2. Shutdown metrics tracker
         if self.metrics_tracker is not None:
@@ -586,24 +600,39 @@ class HybridLogger:
                 self.metrics_tracker.shutdown()
                 self.metrics_tracker = None
             except Exception as e:
-                self.log_error(e, {"operation": "metrics_tracker_shutdown"})
+                print(f"Error shutting down metrics tracker: {e}")
 
         # 3. Shutdown async logger thread (Python side)
         if self.enable_async:
             self.running = False  # Signal thread to stop
             if hasattr(self, "log_thread") and self.log_thread.is_alive():
-                # Wait for queue to empty (no timeout parameter for Queue.join())
-                self.log_queue.join()
+                # Give the worker a chance to process remaining items
+                # The _async_log_worker itself now checks self.running in its loop
+                try:
+                    # Wait for queue to process remaining items
+                    while not self.log_queue.empty():
+                        time.sleep(0.1)
+                except Exception as e:
+                    print(f"Error waiting for log queue to empty: {e}")
                 self.log_thread.join(timeout=2)  # Give thread a moment to finish
 
-        # 4. Shutdown Spark session if owned by this logger instance
+        # 4. Close Python logger handlers explicitly
+        # This is CRUCIAL for preventing "I/O operation on closed file"
+        # when other atexit functions or Python's logging shutdown tries to clean up.
+        for handler in list(self.python_logger.handlers):
+            try:
+                handler.close()
+                self.python_logger.removeHandler(handler)
+            except Exception as e:
+                print(f"Error closing logger handler {handler.name}: {e}", flush=True)
+
+        # 5. Shutdown Spark session if owned by this logger instance
         if self._owns_spark and self.spark is not None:
             try:
                 self.spark.stop()
                 self.spark = None
-                self.python_logger.info("SparkSession stopped.")
+                print("SparkSession stopped.")
             except Exception as e:
-                # Use print as logger might be partially shut down
                 print(f"Error shutting down Spark session: {e}", flush=True)
 
     def _serialize_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -645,16 +674,20 @@ class HybridLogger:
         """Context manager exit: logs errors and ensures graceful shutdown."""
         if exc_type is not None:
             # Log any exception that occurred within the 'with' block
-            import traceback  # Import here to avoid being top-level if not always used
-
-            self.log_error(
-                exc_val,
-                {
-                    "context": "exception_in_main_block",
-                    "exc_type": str(exc_type),
-                    "traceback": traceback.format_exc(),
-                },
-            )
+            # Use print during shutdown to avoid logger issues
+            if self._is_shutting_down:
+                print(f"HybridLogger: Exception during shutdown: {exc_val}")
+                print(f"HybridLogger: Exception type: {exc_type}")
+                print(f"HybridLogger: Traceback: {traceback.format_exc()}")
+            else:
+                self.log_error(
+                    exc_val,
+                    {
+                        "context": "exception_in_main_block",
+                        "exc_type": str(exc_type),
+                        "traceback": traceback.format_exc(),
+                    },
+                )
         self.shutdown()  # Always call shutdown on exit
 
     # --- Convenience methods for MetricsTracker integration ---
@@ -664,16 +697,26 @@ class HybridLogger:
             self.metrics_tracker.start_operation(job_group, operation)
 
     def end_operation(
-        self, spark: SparkSession, execution_time: float, result_count: int = 0
+        self,
+        execution_time: float,
+        result_count: int = 0,  # Removed spark parameter here
     ):
         """Proxy to MetricsTracker.end_operation."""
         if self.metrics_tracker is not None:
-            self.metrics_tracker.end_operation(spark, execution_time, result_count)
+            # MetricsTracker should use its internal spark reference
+            self.metrics_tracker.end_operation(
+                self.spark, execution_time, result_count
+            )  # Pass self.spark
 
-    def record_data_metrics(self, spark: SparkSession, table_name: str = "skewed_data"):
+    def record_data_metrics(
+        self, table_name: str = "skewed_data"
+    ):  # Removed spark parameter here
         """Proxy to MetricsTracker.record_data_metrics."""
         if self.metrics_tracker is not None:
-            self.metrics_tracker.record_data_metrics(spark, table_name)
+            # MetricsTracker should use its internal spark reference
+            self.metrics_tracker.record_data_metrics(
+                self.spark, table_name
+            )  # Pass self.spark
 
     def get_metrics(self) -> Dict:
         """Proxy to MetricsTracker.get_metrics."""
@@ -681,13 +724,25 @@ class HybridLogger:
             return self.metrics_tracker.get_metrics()
         return {}
 
-    def sync_logs_to_external_storage(self, force_sync: bool = False) -> Dict[str, Any]:
+    def sync_logs_to_external_storage(
+        self, force_sync: bool = False, during_shutdown: bool = False
+    ) -> Dict[str, Any]:
         """
         Placeholder to sync local Spark logs (e.g., driver logs) to external storage (e.g., MinIO/S3).
         This would typically involve iterating through log files in self.app_log_output_dir
         and uploading them.
         """
+        # Determine which logging function to use based on 'during_shutdown' flag
+        log_func = print if during_shutdown else self.python_logger.info
+        log_error_func = print if during_shutdown else self.python_logger.error
+
         if not self.enable_log_sync or self.spark is None:
+            if (
+                during_shutdown
+            ):  # Only print if specifically during shutdown for this message
+                log_func(
+                    "HybridLogger: Log sync disabled or no Spark session during shutdown. Skipping."
+                )
             return {
                 "status": "disabled",
                 "reason": "Log sync disabled or no Spark session",
@@ -722,7 +777,8 @@ class HybridLogger:
                 synced_files_count += 1
 
             self.last_sync_time = current_time
-            self.python_logger.info(
+            # Use the determined log_func (print or self.python_logger.info)
+            log_func(
                 f"Successfully synced {synced_files_count} log files to external storage."
             )
             return {
@@ -731,7 +787,8 @@ class HybridLogger:
                 "timestamp": int(current_time * 1000),
             }
         except Exception as e:
-            self.python_logger.error(f"Failed to sync logs to external storage: {e}")
+            # Use the determined log_error_func (print or self.python_logger.error)
+            log_error_func(f"Failed to sync logs to external storage: {e}")
             return {
                 "status": "failed",
                 "error": str(e),

@@ -43,6 +43,18 @@ CREATE TABLE IF NOT EXISTS dataops.job_logs (
     error_summary STRING COMMENT 'Human-readable summary of results',
     error_types ARRAY<STRING> COMMENT 'Types of errors encountered',
     
+    -- Detailed failure tracking by partition
+    failed_files_by_partition MAP<STRING, ARRAY<STRUCT<
+        file_path: STRING,
+        document_id: STRING,
+        document_type: STRING,
+        error_message: STRING,
+        error_code: STRING,
+        record_size_bytes: BIGINT,
+        partition_id: INT,
+        failure_timestamp: TIMESTAMP
+    >>> COMMENT 'Detailed mapping of partition IDs to lists of failed files with their specific error information',
+    
     -- Business events
     business_events_count INT COMMENT 'Number of business events logged',
     business_event_types ARRAY<STRING> COMMENT 'Types of business events encountered',

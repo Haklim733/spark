@@ -10,7 +10,6 @@ from .session import (
     IcebergConfig,
     S3FileSystemConfig,
     create_spark_session,
-    create_spark_connect_session,
 )
 
 # Logging utilities
@@ -25,7 +24,6 @@ __all__ = [
     "IcebergConfig",
     "S3FileSystemConfig",
     "create_spark_session",
-    "create_spark_connect_session",
     # Logging
     "HybridLogger",
     "MetricsTracker",

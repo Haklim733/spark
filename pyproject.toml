@@ -41,6 +41,11 @@ markers = [
     "spark_integration: marks tests in tests/integ/spark (excluded by default, include with '-m spark_integration')"
 ]
 
+[dependency-groups]
+notebook = [
+    "jupyter>=1.1.1",
+]
+
 # Spark Integration Test Configuration
 # ===================================
 # By default, spark_integration tests are excluded to speed up regular test runs.

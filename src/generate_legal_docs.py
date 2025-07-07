@@ -15,7 +15,8 @@ import io
 import argparse
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
+import re
 
 from faker import Faker
 
@@ -124,6 +125,17 @@ def generate_template_data(
     )
     current_year = datetime.now(timezone.utc).year
 
+    # Get keywords from SchemaManager using the document type configuration
+    doc_type_name = doc_type.get("name", "legal")
+    doc_type_config = schema_manager.get_legal_doc_type(doc_type_name)
+
+    if doc_type_config and "keywords" in doc_type_config:
+        # Join keywords array into a comma-separated string
+        keywords = ", ".join(doc_type_config["keywords"])
+    else:
+        # Fallback if keywords not found
+        keywords = "legal, document, compliance"
+
     template_data = {
         "document_number": f"{document_number:04d}",
         "date": current_date,
@@ -160,6 +172,7 @@ def generate_template_data(
         "service_type": "legal",
         "hourly_rate": f"${random.randint(100, 300)}",
         "notice_period": f"{random.randint(15, 60)} days",
+        "keywords": keywords,  # Use keywords from SchemaManager
     }
 
     return template_data
@@ -183,12 +196,13 @@ def generate_document_content(doc_type: Dict[str, Any], document_number: int) ->
     # Generate template data
     template_data = generate_template_data(doc_type, document_number)
 
+    # Convert double braces to single braces for Python string formatting
+    # Replace {{variable}} with {variable}
+    formatted_template = re.sub(r"\{\{(\w+)\}\}", r"{\1}", template_content)
+
     # Format template with data using Python string formatting
-    try:
-        content = template_content.format(**template_data)
-        return content
-    except Exception as e:
-        raise Exception(f"Error formatting template for {doc_type['name']}: {e}")
+    content = formatted_template.format(**template_data)
+    return content
 
 
 def create_document_metadata(doc: Dict[str, Any], doc_uuid: str) -> Dict[str, Any]:
@@ -235,20 +249,12 @@ def create_document_metadata(doc: Dict[str, Any], doc_uuid: str) -> Dict[str, An
                     if generated_at.endswith("+00:00"):
                         generated_at = generated_at.replace("+00:00", "Z")
                     elif not generated_at.endswith("Z"):
-                        # Try to parse and reformat
-                        try:
-                            dt = datetime.fromisoformat(
-                                generated_at.replace("Z", "+00:00")
-                            )
-                            if dt.tzinfo is None:
-                                dt = dt.replace(tzinfo=timezone.utc)
-                            else:
-                                dt = dt.astimezone(timezone.utc)
-                            generated_at = (
-                                dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-                            )
-                        except:
-                            pass  # Keep original if parsing fails
+                        dt = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        else:
+                            dt = dt.astimezone(timezone.utc)
+                        generated_at = dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
                 metadata[field_name] = generated_at
         elif field_name == "source":
             # Use default from schema if available
@@ -333,41 +339,36 @@ def save_documents_to_minio(
 
         metadata_bytes = json.dumps(metadata, indent=2).encode("utf-8")
 
-        try:
-            # Upload document content using BytesIO
-            content_stream = io.BytesIO(content_bytes)
-            minio_client.put_object(
-                bucket_name,
-                content_path,
-                content_stream,
-                length=len(content_bytes),
-                content_type="text/plain",
-            )
+        # Upload document content using BytesIO
+        content_stream = io.BytesIO(content_bytes)
+        minio_client.put_object(
+            bucket_name,
+            content_path,
+            content_stream,
+            length=len(content_bytes),
+            content_type="text/plain",
+        )
 
-            # Upload metadata using BytesIO
-            metadata_stream = io.BytesIO(metadata_bytes)
-            minio_client.put_object(
-                bucket_name,
-                metadata_path,
-                metadata_stream,
-                length=len(metadata_bytes),
-                content_type="application/json",
-            )
+        # Upload metadata using BytesIO
+        metadata_stream = io.BytesIO(metadata_bytes)
+        minio_client.put_object(
+            bucket_name,
+            metadata_path,
+            metadata_stream,
+            length=len(metadata_bytes),
+            content_type="application/json",
+        )
 
-            # Update document record with file paths (use s3a:// format)
-            doc["filename"] = content_filename
-            doc["file_path"] = f"s3a://{bucket_name}/{content_path}"
-            doc["metadata_path"] = f"s3a://{bucket_name}/{metadata_path}"
+        # Update document record with file paths (use s3a:// format)
+        doc["filename"] = content_filename
+        doc["file_path"] = f"s3a://{bucket_name}/{content_path}"
+        doc["metadata_path"] = f"s3a://{bucket_name}/{metadata_path}"
 
-            total_saved += 1
-            total_metadata_saved += 1
+        total_saved += 1
+        total_metadata_saved += 1
 
-            if (i + 1) % 100 == 0:
-                print(f"Saved {i + 1} document pairs (content + metadata)...")
-
-        except S3Error as e:
-            print(f"Error saving document {i+1}: {e}")
-            continue
+        if (i + 1) % 100 == 0:
+            print(f"Saved {i + 1} document pairs (content + metadata)...")
 
     print(f"\nSuccessfully saved {total_saved} text files to MinIO")
     print(f"Successfully saved {total_metadata_saved} metadata files to MinIO")
@@ -377,17 +378,48 @@ def save_documents_to_minio(
     print(f"Date directory: {current_date}")
 
 
+def validate_generated_document(doc: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """
+    Validate a generated document using SchemaManager
+
+    Args:
+        doc: Generated document dictionary
+
+    Returns:
+        Tuple of (is_valid, list_of_errors)
+    """
+    errors = []
+
+    # Validate document type
+    if not schema_manager.validate_document_type(doc["document_type"]):
+        errors.append(f"Invalid document type: {doc['document_type']}")
+
+    # Create metadata for validation
+    metadata = create_document_metadata(doc, doc["document_id"])
+
+    # Validate metadata against schema
+    if not schema_manager.validate_legal_document_metadata(metadata):
+        errors.append("Metadata validation failed")
+
+    # Validate content quality
+    if not doc.get("content") or len(doc["content"].strip()) < 50:
+        errors.append("Content too short or empty")
+
+    return len(errors) == 0, errors
+
+
 def generate_legal_documents(num_docs: int = 1000) -> List[Dict[str, Any]]:
     """
-    Generate legal documents with UTC timestamps
+    Generate legal documents with UTC timestamps and validation
     """
     # Get legal document types from models
     legal_doc_types = schema_manager.get_all_legal_doc_types()
 
-    print(f"Generating {num_docs} legal documents using template formatting...")
+    print(f"Generating {num_docs} legal documents with validation...")
 
     # Track document generation statistics
     doc_type_counts = {doc_type["name"]: 0 for doc_type in legal_doc_types}
+    validation_stats = {"valid": 0, "invalid": 0, "errors": []}
 
     # List to store all generated documents
     documents = []
@@ -397,41 +429,54 @@ def generate_legal_documents(num_docs: int = 1000) -> List[Dict[str, Any]]:
         doc_type = random.choice(legal_doc_types)
         doc_type_counts[doc_type["name"]] += 1
 
-        try:
-            # Generate content using template formatting
-            content = generate_document_content(doc_type, i + 1)
+        # Generate content using template formatting
+        content = generate_document_content(doc_type, i + 1)
 
-            # Generate UUID for document ID
-            doc_uuid = str(uuid.uuid4())
+        # Generate UUID for document ID
+        doc_uuid = str(uuid.uuid4())
 
-            # Create document record with UTC timestamp
-            document = {
-                "document_id": doc_uuid,  # Use UUID instead of counter
-                "document_type": doc_type["name"],
-                "content": content,
-                "filename": "",
-                "file_path": "",
-                "metadata_path": "",
-                "generated_at": datetime.now(timezone.utc),  # UTC timestamp
-            }
+        # Create document record with UTC timestamp
+        document = {
+            "document_id": doc_uuid,
+            "document_type": doc_type["name"],
+            "content": content,
+            "filename": "",
+            "file_path": "",
+            "metadata_path": "",
+            "generated_at": datetime.now(timezone.utc),
+        }
 
+        # Validate the generated document
+        is_valid, errors = validate_generated_document(document)
+
+        if is_valid:
             documents.append(document)
+            validation_stats["valid"] += 1
+        else:
+            validation_stats["invalid"] += 1
+            validation_stats["errors"].extend(errors)
+            print(f"❌ Document {i+1} failed validation: {errors}")
 
-            if (i + 1) % 100 == 0:
-                print(f"Generated {i + 1} documents...")
-
-        except Exception as e:
-            print(f"Error generating document {i+1}: {e}")
-            # Continue with next document instead of using fallback content
-            continue
+        if (i + 1) % 100 == 0:
+            print(
+                f"Generated {i + 1} documents... (Valid: {validation_stats['valid']}, Invalid: {validation_stats['invalid']})"
+            )
 
     # Print generation statistics
     print(f"\n=== Generation Complete ===")
     print(f"Total documents generated: {len(documents)}")
+    print(
+        f"Validation results: {validation_stats['valid']} valid, {validation_stats['invalid']} invalid"
+    )
     print(f"Document type distribution:")
     for doc_type, count in doc_type_counts.items():
         percentage = (count / num_docs) * 100
         print(f"  {doc_type}: {count} ({percentage:.1f}%)")
+
+    if validation_stats["errors"]:
+        print(f"\nValidation errors encountered:")
+        for error in validation_stats["errors"][:10]:  # Show first 10 errors
+            print(f"  - {error}")
 
     return documents
 
@@ -461,33 +506,27 @@ def generate_specific_document_type(
     documents = []
 
     for i in range(num_docs):
-        try:
-            # Generate content using template formatting
-            content = generate_document_content(doc_type, i + 1)
+        # Generate content using template formatting
+        content = generate_document_content(doc_type, i + 1)
 
-            # Generate UUID for document ID
-            doc_uuid = str(uuid.uuid4())
+        # Generate UUID for document ID
+        doc_uuid = str(uuid.uuid4())
 
-            # Create document record
-            document = {
-                "document_id": doc_uuid,  # Use UUID instead of counter
-                "document_type": doc_type["name"],
-                "content": content,
-                "filename": "",  # Will be set during save
-                "file_path": "",  # Will be set during save
-                "metadata_path": "",  # Will be set during save
-                "generated_at": datetime.now(timezone.utc),
-            }
+        # Create document record
+        document = {
+            "document_id": doc_uuid,  # Use UUID instead of counter
+            "document_type": doc_type["name"],
+            "content": content,
+            "filename": "",  # Will be set during save
+            "file_path": "",  # Will be set during save
+            "metadata_path": "",  # Will be set during save
+            "generated_at": datetime.now(timezone.utc),
+        }
 
-            documents.append(document)
+        documents.append(document)
 
-            if (i + 1) % 50 == 0:
-                print(f"Generated {i + 1} {doc_type_name} documents...")
-
-        except Exception as e:
-            print(f"Error generating document {i+1}: {e}")
-            # Continue with next document instead of using fallback content
-            continue
+        if (i + 1) % 50 == 0:
+            print(f"Generated {i + 1} {doc_type_name} documents...")
 
     print(f"Successfully generated {len(documents)} {doc_type_name} documents")
     return documents
@@ -527,23 +566,19 @@ def main():
 
     args = parser.parse_args()
 
-    try:
-        # Generate documents
-        if args.doc_type:
-            # Generate specific document type
-            documents = generate_specific_document_type(args.doc_type, args.num_docs)
-        else:
-            # Generate all document types randomly
-            documents = generate_legal_documents(num_docs=args.num_docs)
+    # Generate documents
+    if args.doc_type:
+        # Generate specific document type
+        documents = generate_specific_document_type(args.doc_type, args.num_docs)
+    else:
+        # Generate all document types randomly
+        documents = generate_legal_documents(num_docs=args.num_docs)
 
-        if not documents:
-            print("No documents were generated successfully. Exiting.")
-            return
+    if not documents:
+        print("No documents were generated successfully. Exiting.")
+        return
 
-        save_documents_to_minio(documents, args.bucket, args.key)
-
-    except Exception as e:
-        print(f"Error in main execution: {e}")
+    save_documents_to_minio(documents, args.bucket, args.key)
 
 
 if __name__ == "__main__":

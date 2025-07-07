@@ -100,21 +100,38 @@ def basic_load_validation(spark: SparkSession, table_name: str) -> bool:
     """Validate table existence and get basic stats"""
     print(f"\n🔍 Validating table: {table_name}")
 
-    # Check table exists
-    tables = spark.sql(f"SHOW TABLES IN {table_name.split('.')[0]}")
-    table_list = tables.take(100)
-    table_exists = any(table_name.split(".")[1] in str(row) for row in table_list)
-
-    if not table_exists:
-        print(f"❌ Table {table_name} does not exist!")
+    # Parse namespace and table name from full table name
+    parts = table_name.split(".")
+    if len(parts) < 2:
+        print(f"❌ Invalid table name format: {table_name}")
         return False
 
-    # Get row count
-    count_result = spark.sql(f"SELECT COUNT(*) as total_count FROM {table_name}")
-    total_count = count_result.take(1)[0]["total_count"]
-    print(f"📊 Total records: {total_count:,}")
+    # For multi-level namespaces, join all parts except the last one
+    namespace = ".".join(parts[:-1])
+    table_name_only = parts[-1]
 
-    return True
+    print(f"🔍 Checking namespace: {namespace}, table: {table_name_only}")
+
+    # Check table exists in the correct namespace
+    try:
+        tables = spark.sql(f"SHOW TABLES IN {namespace}")
+        table_list = tables.take(100)
+        table_exists = any(table_name_only == row.tableName for row in table_list)
+
+        if not table_exists:
+            print(f"❌ Table {table_name} does not exist in namespace {namespace}!")
+            return False
+
+        # Get row count
+        count_result = spark.sql(f"SELECT COUNT(*) as total_count FROM {table_name}")
+        total_count = count_result.take(1)[0]["total_count"]
+        print(f"📊 Total records: {total_count:,}")
+
+        return True
+
+    except Exception as e:
+        print(f"❌ Error validating table {table_name}: {e}")
+        return False
 
 
 def generate_job_id() -> str:
@@ -273,6 +290,19 @@ def process_records(
     return [final_df_filtered]
 
 
+def insert_overwrite(
+    spark: SparkSession, source_df: DataFrame, table_name: str
+) -> bool:
+    """Insert overwrite to replace all data in the table"""
+    print(f"📝 Inserting overwrite into {table_name}")
+
+    # Use insert overwrite to replace all data
+    source_df.write.mode("overwrite").insertInto(table_name)
+
+    print(f"✅ Successfully inserted overwrite into {table_name}")
+    return True
+
+
 def merge_to_iceberg_table(
     spark: SparkSession, source_df: DataFrame, table_name: str
 ) -> bool:
@@ -323,7 +353,7 @@ def insert_records(
     for i, df in enumerate(processed_dataframes):
         if df is not None:
             try:
-                merge_to_iceberg_table(spark, df, table_name)
+                insert_overwrite(spark, df, table_name)
                 df_count = int(df.count())  # Convert to regular int
                 successful_inserts += df_count
 

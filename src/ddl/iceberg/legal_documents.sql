@@ -1,7 +1,7 @@
 -- Legal Documents Table DDL for ELT approach
 -- This table stores raw legal documents with metadata as individual columns
 
-CREATE OR REPLACE TABLE legal.documents (
+CREATE OR REPLACE TABLE legal.raw.documents_snapshot (
     -- metadata
     document_id STRING COMMENT 'Unique identifier for the document',
     document_type STRING COMMENT 'Type of legal document (contract, legal_memo, court_filing, policy_document, legal_opinion)',
@@ -22,7 +22,7 @@ CREATE OR REPLACE TABLE legal.documents (
     job_id STRING COMMENT 'Job identifier for operational tracking and debugging'    
 )
 USING iceberg
-PARTITIONED BY (document_type, month(generated_at))
+PARTITIONED BY (document_type, day(generated_at))
 TBLPROPERTIES (
     'write.format.default' = 'parquet',
     'write.parquet.compression-codec' = 'zstd',

@@ -93,6 +93,27 @@ def create_iceberg_namespace(spark, namespace):
         return False
 
 
+def create_nested_iceberg_namespaces(spark, namespace_path):
+    """Create nested namespaces if they don't exist in Iceberg"""
+    print(f"Creating nested Iceberg namespaces for '{namespace_path}'...")
+
+    # Split the namespace path into individual levels
+    namespace_parts = namespace_path.split(".")
+
+    # Create each level of the namespace hierarchy
+    for i in range(1, len(namespace_parts) + 1):
+        current_namespace = ".".join(namespace_parts[:i])
+        try:
+            spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {current_namespace}")
+            print(f"✅ Created namespace level: {current_namespace}")
+        except Exception as e:
+            print(f"❌ Error creating namespace '{current_namespace}': {e}")
+            return False
+
+    print(f"✅ Successfully created all nested namespaces for '{namespace_path}'")
+    return True
+
+
 def extract_iceberg_namespaces_from_ddl(iceberg_ddl_dir):
     """Extract all namespaces referenced in Iceberg DDL files"""
     namespaces = set()
@@ -109,8 +130,11 @@ def extract_iceberg_namespaces_from_ddl(iceberg_ddl_dir):
             import re
 
             # Handle both CREATE TABLE IF NOT EXISTS and CREATE OR REPLACE TABLE
+            # Updated regex to capture full namespace path (e.g., "legal.raw")
+            # This regex captures only the namespace part before the table name
             matches = re.findall(
-                r"CREATE (?:TABLE IF NOT EXISTS|OR REPLACE TABLE) (\w+)\.", content
+                r"CREATE (?:TABLE IF NOT EXISTS|OR REPLACE TABLE) ([^.]+(?:\.[^.]+)*)\.\w+\s*\(",
+                content,
             )
             print(f"DEBUG: Found Iceberg matches: {matches}")
             namespaces.update(matches)
@@ -168,13 +192,13 @@ def main():
 
         if required_namespaces:
             print(f"Found Iceberg namespaces: {required_namespaces}")
-            print("Creating Iceberg namespaces...")
+            print("Creating nested Iceberg namespaces...")
 
             for namespace in required_namespaces:
-                namespace_success = create_iceberg_namespace(spark, namespace)
+                namespace_success = create_nested_iceberg_namespaces(spark, namespace)
                 if not namespace_success:
                     print(
-                        f"⚠️  Failed to create Iceberg namespace '{namespace}'. Continuing with other namespaces..."
+                        f"⚠️  Failed to create nested Iceberg namespace '{namespace}'. Continuing with other namespaces..."
                     )
         else:
             print("No Iceberg namespaces found in DDL files")

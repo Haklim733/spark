@@ -291,6 +291,8 @@ def merge_to_iceberg_table(
     MERGE INTO {table_name} t
     USING {temp_view} s
     ON t.document_id = s.document_id
+    AND t.document_type = s.document_type
+    AND month(t.generated_at) = month(s.generated_at) - 1
     WHEN MATCHED THEN UPDATE SET
       {set_clause}
     WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})

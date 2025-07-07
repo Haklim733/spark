@@ -12,7 +12,7 @@ import sys
 from typing import List, Dict, Any
 import uuid
 
-from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql import SparkSession, DataFrame, Row
 from pyspark.sql.functions import (
     col,
     concat_ws,
@@ -27,6 +27,7 @@ from pyspark.sql.functions import (
     sha2,
     when,
     count,
+    to_timestamp,
 )
 from pyspark.sql.types import StringType, LongType, TimestampType
 from src.utils.logger import HybridLogger
@@ -290,16 +291,55 @@ def process_records(
     return [final_df_filtered]
 
 
+def insert_dummy_data(spark: SparkSession, table_name: str) -> bool:
+    """insert dummy data if main branch has no snapshot
+    'Cannot complete replace branch operation on legal.documents_snapshot, main has no snapshot'
+    """
+    dummy_data = [
+        {
+            "document_id": "doc_000",
+            "document_type": "dummy",
+            "generated_at": "2024-01-01 10:00:00",
+            "source": "soli_legal_document_generator",
+            "language": "en",
+            "file_size": 1024,
+            "method": "spark",
+            "schema_version": "1.0",
+            "metadata_file_path": "s3a://raw/docs/legal/contract/20240115/metadata/doc_001.json",
+            "raw_text": "This is a sample legal contract text for testing purposes.",
+            "file_path": "s3a://raw/docs/legal/contract/20240115/content/doc_001.txt",
+            "batch_id": "batch_20240115_001",
+            "job_id": "test_job_001",
+        },
+    ]
+
+    # Create DataFrame using v2 API approach
+    df = spark.createDataFrame(dummy_data)
+    df = df.withColumn("generated_at", to_timestamp("generated_at"))
+    df.writeTo(table_name).createOrReplace()
+    return True
+
+
 def insert_overwrite(
     spark: SparkSession, source_df: DataFrame, table_name: str
 ) -> bool:
     """Insert overwrite to replace all data in the table"""
-    print(f"📝 Inserting overwrite into {table_name}")
+    # spark.sql("SELECT COUNT(*) FROM legal.documents_snapshot").show()
 
-    # Use insert overwrite to replace all data
-    source_df.write.mode("overwrite").insertInto(table_name)
+    print(f"📝 Inserting overwrite into {table_name} in staging branch")
+    # source_df.show()
+    source_df.writeTo(f"{table_name}.branch_staging").overwritePartitions()
+    # source_df.writeTo(f"{table_name}").option("branch", "staging").option(
+    #     "overwrite-mode", "dynamic"
+    # ).overwrite(lit(True)) # this doesn't work
 
-    print(f"✅ Successfully inserted overwrite into {table_name}")
+    # spark.sql("SELECT name, snapshot_id FROM legal.documents_snapshot.refs").show()
+
+    table = spark.read.option("branch", "staging").table(table_name)
+    print(
+        f"✅ Inserted DataFrame into {table_name} staging branch with {table.count()} rows"
+    )
+
     return True
 
 
@@ -321,8 +361,7 @@ def merge_to_iceberg_table(
     MERGE INTO {table_name} t
     USING {temp_view} s
     ON t.document_id = s.document_id
-    AND t.document_type = s.document_type
-    AND month(t.generated_at) = month(s.generated_at) - 1
+    AND day(t.generated_at) = day(s.generated_at)
     WHEN MATCHED THEN UPDATE SET
       {set_clause}
     WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})
@@ -356,9 +395,6 @@ def insert_records(
                 insert_overwrite(spark, df, table_name)
                 df_count = int(df.count())  # Convert to regular int
                 successful_inserts += df_count
-
-                print(f"✅ Inserted DataFrame {i+1} with {df_count} rows")
-
                 # Log business event with converted types
                 observability_logger.log_business_event(
                     "dataframe_inserted",
@@ -445,6 +481,13 @@ def main():
         help="Number of partitions for parallel processing",
     )
 
+    parser.add_argument(
+        "--branch",
+        type=str,
+        default="staging",
+        help="Branch name",
+    )
+
     args = parser.parse_args()
 
     print("🚀 Starting Insert Operation")
@@ -455,6 +498,7 @@ def main():
     spark = create_spark_session(
         app_name=Path(__file__).stem,
         spark_version=SparkVersion.SPARK_CONNECT_3_5,
+        **{"spark.wap.branch": "staging"},
     )
 
     with HybridLogger(

@@ -21,44 +21,32 @@ def check_namespace_tables(spark, namespace):
     """Check tables in a specific namespace"""
     print(f"\n=== TABLES IN {namespace.upper()} NAMESPACE ===")
 
-    try:
-        # Use the Iceberg catalog explicitly
-        spark.sql(f"USE iceberg.{namespace};")
-        tables = spark.sql("SHOW TABLES;")
+    # Use the Iceberg catalog explicitly
+    spark.sql(f"USE iceberg.{namespace};")
+    tables = spark.sql("SHOW TABLES;")
 
-        if tables.count() == 0:
-            print(f"❌ No tables found in {namespace} namespace")
-            return
+    if tables.count() == 0:
+        print(f"❌ No tables found in {namespace} namespace")
+        return
 
-        print(f"Found {tables.count()} table(s):")
-        tables.show(truncate=False)
+    print(f"Found {tables.count()} table(s):")
+    tables.show(truncate=False)
 
-        # Check each table
-        for row in tables.collect():
-            table_name = row.tableName
-            full_table_name = f"iceberg.{namespace}.{table_name}"
+    # Check each table
+    for row in tables.collect():
+        table_name = row.tableName
+        full_table_name = f"iceberg.{namespace}.{table_name}"
 
-            try:
-                # Get table description
-                desc_result = spark.sql(f"DESCRIBE {full_table_name}")
-                print(f"\n📋 Table: {table_name}")
-                desc_result.show(truncate=False)
+        # Get table description
+        desc_result = spark.sql(f"DESCRIBE EXTENDED {full_table_name}")
+        print(f"\n📋 Table: {table_name}")
+        desc_result.show(truncate=False)
 
-                # Try to get row count
-                try:
-                    count_result = spark.sql(
-                        f"SELECT COUNT(*) as count FROM {full_table_name}"
-                    )
-                    count = count_result.collect()[0]["count"]
-                    print(f"📊 Row count: {count:,}")
-                except Exception as e:
-                    print(f"📊 Row count: Unable to determine ({e})")
+        count_result = spark.sql(f"SELECT COUNT(*) as count FROM {full_table_name}")
+        count = count_result.collect()[0]["count"]
+        print(f"📊 Row count: {count:,}")
 
-            except Exception as e:
-                print(f"❌ Error accessing table {table_name}: {e}")
-
-    except Exception as e:
-        print(f"❌ Error accessing namespace '{namespace}': {e}")
+        spark.sql(f"SELECT name, snapshot_id FROM {full_table_name}.refs").show()
 
 
 def check_all_namespaces(spark):

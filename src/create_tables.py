@@ -11,112 +11,12 @@ import psycopg2
 from src.utils.session import (
     create_spark_session,
     SparkVersion,
-    IcebergConfig,
-    S3FileSystemConfig,
 )
 
 
-def execute_iceberg_ddl(ddl_file_path, spark):
-    """Execute DDL from a SQL file using Spark SQL for Iceberg tables"""
-    print(f"Executing Iceberg DDL from: {ddl_file_path}")
-
-    # Read SQL file
-    with open(ddl_file_path, "r") as f:
-        sql_content = f.read()
-
-    # Process SQL content to handle comments properly
-    lines = []
-    for line in sql_content.split("\n"):
-        line = line.strip()
-        if line and not line.startswith("--"):
-            # Remove inline comments (everything after --)
-            if "--" in line:
-                line = line.split("--")[0].strip()
-            if line:  # Only add non-empty lines
-                lines.append(line)
-
-    sql_statement = " ".join(lines)
-
-    # Execute the SQL statement
-    try:
-        spark.sql(sql_statement)
-        print(f"✅ Successfully executed Iceberg SQL statement")
-        return True
-    except Exception as e:
-        print(f"❌ Error executing Iceberg SQL: {e}")
-        return False
-
-
-def execute_postgres_ddl(ddl_file_path, pg_conn):
-    """Execute DDL from a SQL file using PostgreSQL connection"""
-    print(f"Executing PostgreSQL DDL from: {ddl_file_path}")
-
-    # Read SQL file
-    with open(ddl_file_path, "r") as f:
-        sql_content = f.read()
-
-    # Process SQL content to handle comments properly
-    lines = []
-    for line in sql_content.split("\n"):
-        line = line.strip()
-        if line and not line.startswith("--"):
-            # Remove inline comments (everything after --)
-            if "--" in line:
-                line = line.split("--")[0].strip()
-            if line:  # Only add non-empty lines
-                lines.append(line)
-
-    sql_statement = " ".join(lines)
-
-    # Execute the SQL statement
-    try:
-        with pg_conn.cursor() as cursor:
-            cursor.execute(sql_statement)
-            pg_conn.commit()
-        print(f"✅ Successfully executed PostgreSQL SQL statement")
-        return True
-    except Exception as e:
-        print(f"❌ Error executing PostgreSQL SQL: {e}")
-        pg_conn.rollback()
-        return False
-
-
-def create_iceberg_namespace(spark, namespace):
-    """Create a namespace if it doesn't exist in Iceberg"""
-    print(f"Creating Iceberg namespace '{namespace}'...")
-    try:
-        spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {namespace}")
-        print(f"✅ Successfully created Iceberg namespace '{namespace}'")
-        return True
-    except Exception as e:
-        print(f"❌ Error creating Iceberg namespace '{namespace}': {e}")
-        return False
-
-
-def create_nested_iceberg_namespaces(spark, namespace_path):
-    """Create nested namespaces if they don't exist in Iceberg"""
-    print(f"Creating nested Iceberg namespaces for '{namespace_path}'...")
-
-    # Split the namespace path into individual levels
-    namespace_parts = namespace_path.split(".")
-
-    # Create each level of the namespace hierarchy
-    for i in range(1, len(namespace_parts) + 1):
-        current_namespace = ".".join(namespace_parts[:i])
-        try:
-            spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {current_namespace}")
-            print(f"✅ Created namespace level: {current_namespace}")
-        except Exception as e:
-            print(f"❌ Error creating namespace '{current_namespace}': {e}")
-            return False
-
-    print(f"✅ Successfully created all nested namespaces for '{namespace_path}'")
-    return True
-
-
-def extract_iceberg_namespaces_from_ddl(iceberg_ddl_dir):
-    """Extract all namespaces referenced in Iceberg DDL files"""
-    namespaces = set()
+def extract_table_names_from_ddl(iceberg_ddl_dir):
+    """Extract all table names referenced in Iceberg DDL files"""
+    table_names = set()
 
     for ddl_file in iceberg_ddl_dir.glob("*.sql"):
         try:
@@ -130,20 +30,124 @@ def extract_iceberg_namespaces_from_ddl(iceberg_ddl_dir):
             import re
 
             # Handle both CREATE TABLE IF NOT EXISTS and CREATE OR REPLACE TABLE
-            # Updated regex to capture full namespace path (e.g., "legal.raw")
-            # This regex captures only the namespace part before the table name
+            # This regex captures the full table name (namespace.table)
             matches = re.findall(
-                r"CREATE (?:TABLE IF NOT EXISTS|OR REPLACE TABLE) ([^.]+(?:\.[^.]+)*)\.\w+\s*\(",
+                r"CREATE (?:TABLE IF NOT EXISTS|OR REPLACE TABLE) ([^.]+(?:\.[^.]+)*\.\w+)\s*\(",
                 content,
             )
-            print(f"DEBUG: Found Iceberg matches: {matches}")
-            namespaces.update(matches)
+            print(f"DEBUG: Found table matches: {matches}")
+            table_names.update(matches)
 
         except Exception as e:
             print(f"⚠️  Error reading {ddl_file}: {e}")
 
-    print(f"DEBUG: Final Iceberg namespaces found: {list(namespaces)}")
-    return list(namespaces)
+    print(f"DEBUG: Final table names found: {list(table_names)}")
+    return list(table_names)
+
+
+def execute_iceberg_ddl(ddl_file_path, spark):
+    """Execute DDL from a SQL file using Spark SQL for Iceberg tables"""
+    print(f"Executing Iceberg DDL from: {ddl_file_path}")
+
+    # Read SQL file
+    with open(ddl_file_path, "r") as f:
+        sql_content = f.read()
+
+    # Split by semicolon to handle multiple commands
+    statements = []
+    for statement in sql_content.split(";"):
+        # Process SQL content to handle comments properly
+        lines = []
+        for line in statement.split("\n"):
+            line = line.strip()
+            if line and not line.startswith("--"):
+                # Remove inline comments (everything after --)
+                if "--" in line:
+                    line = line.split("--")[0].strip()
+                if line:  # Only add non-empty lines
+                    lines.append(line)
+
+        # Join lines and clean up
+        if lines:
+            sql_statement = " ".join(lines).strip()
+            if sql_statement:  # Only add non-empty statements
+                statements.append(sql_statement)
+
+    # Execute each statement
+    success_count = 0
+    total_statements = len(statements)
+
+    for i, sql_statement in enumerate(statements, 1):
+        print(
+            f"📝 Executing statement {i}/{total_statements}: {sql_statement[:100]}..."
+        )
+
+        try:
+            spark.sql(sql_statement)
+            print(f"✅ Successfully executed statement {i}")
+            success_count += 1
+        except Exception as e:
+            print(f"❌ Error executing statement {i}: {e}")
+            print(f"   Statement: {sql_statement}")
+
+    print(
+        f"✅ Successfully executed {success_count}/{total_statements} statements from {ddl_file_path}"
+    )
+    return success_count == total_statements
+
+
+def execute_postgres_ddl(ddl_file_path, pg_conn):
+    """Execute DDL from a SQL file using PostgreSQL connection"""
+    print(f"Executing PostgreSQL DDL from: {ddl_file_path}")
+
+    # Read SQL file
+    with open(ddl_file_path, "r") as f:
+        sql_content = f.read()
+
+    # Split by semicolon to handle multiple commands
+    statements = []
+    for statement in sql_content.split(";"):
+        # Process SQL content to handle comments properly
+        lines = []
+        for line in statement.split("\n"):
+            line = line.strip()
+            if line and not line.startswith("--"):
+                # Remove inline comments (everything after --)
+                if "--" in line:
+                    line = line.split("--")[0].strip()
+                if line:  # Only add non-empty lines
+                    lines.append(line)
+
+        # Join lines and clean up
+        if lines:
+            sql_statement = " ".join(lines).strip()
+            if sql_statement:  # Only add non-empty statements
+                statements.append(sql_statement)
+
+    # Execute each statement
+    success_count = 0
+    total_statements = len(statements)
+
+    for i, sql_statement in enumerate(statements, 1):
+        print(
+            f"📝 Executing statement {i}/{total_statements}: {sql_statement[:100]}..."
+        )
+
+        try:
+            with pg_conn.cursor() as cursor:
+                cursor.execute(sql_statement)
+                pg_conn.commit()
+            print(f"✅ Successfully executed statement {i}")
+            success_count += 1
+        except Exception as e:
+            print(f"❌ Error executing statement {i}: {e}")
+            print(f"   Statement: {sql_statement}")
+            pg_conn.rollback()
+
+    print(
+        f"✅ Successfully executed {success_count}/{total_statements} statements from {ddl_file_path}"
+    )
+    return success_count == total_statements
 
 
 def get_postgres_connection():
@@ -187,21 +191,10 @@ def main():
         print("Processing Iceberg DDL files...")
         print(f"{'='*50}")
 
-        print("Detecting required Iceberg namespaces...")
-        required_namespaces = extract_iceberg_namespaces_from_ddl(iceberg_ddl_dir)
-
-        if required_namespaces:
-            print(f"Found Iceberg namespaces: {required_namespaces}")
-            print("Creating nested Iceberg namespaces...")
-
-            for namespace in required_namespaces:
-                namespace_success = create_nested_iceberg_namespaces(spark, namespace)
-                if not namespace_success:
-                    print(
-                        f"⚠️  Failed to create nested Iceberg namespace '{namespace}'. Continuing with other namespaces..."
-                    )
-        else:
-            print("No Iceberg namespaces found in DDL files")
+        # Extract table names for branch cleanup
+        print("Detecting Iceberg tables for branch cleanup...")
+        table_names = extract_table_names_from_ddl(iceberg_ddl_dir)
+        print(f"Found tables to process: {table_names}")
 
         # Execute all Iceberg DDL files
         for ddl_file in iceberg_ddl_dir.glob("*.sql"):
@@ -217,6 +210,7 @@ def main():
                     print(f"❌ Failed to execute Iceberg: {ddl_file}")
             except Exception as e:
                 print(f"❌ Error executing Iceberg {ddl_file}: {e}")
+
     else:
         print(f"Iceberg DDL directory not found: {iceberg_ddl_dir}")
 

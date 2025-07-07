@@ -11,7 +11,7 @@ dependencies = [
     "jsonschema>=4.24.0",
     "faker>=28.4.1",
     "psycopg2-binary>=2.9.10",
-    "sqlmesh[postgres,web]>=0.164.0",
+    "sqlmesh[postgres,web,pyspark]>=0.164.0",
     "setuptools>=80.9.0",
 ]
 

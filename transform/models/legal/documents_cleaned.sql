@@ -1,9 +1,9 @@
 MODEL (
     name legal.documents_cleaned,
     kind INCREMENTAL_BY_TIME_RANGE (
-        time_column load_timestamp
+        time_column generated_at
     ),
-    grain [document_id, load_timestamp],
+    grain [document_id, generated_at],
 );
 
 -- Reference existing table without schema management
@@ -13,16 +13,31 @@ SELECT
     raw_text,
     generated_at,
     file_path,
-    content_length as document_length,
-    word_count,
+    source,
     language,
-    load_batch_id,
-    load_timestamp,
-    -- Replace JSON_VALID with Spark-compatible logic
+    file_size,
+    method,
+    schema_version,
+    metadata_file_path,
+    batch_id,
+    job_id,
+    -- Calculate content length from raw_text
     CASE 
-        WHEN document_length > 0 AND raw_text IS NOT NULL THEN 'valid'
+        WHEN raw_text IS NOT NULL THEN LENGTH(raw_text)
+        ELSE 0
+    END as content_length,
+    -- Calculate word count from raw_text
+    CASE 
+        WHEN raw_text IS NOT NULL THEN SIZE(SPLIT(raw_text, ' '))
+        ELSE 0
+    END as word_count,
+    -- Data quality assessment
+    CASE 
+        WHEN raw_text IS NOT NULL AND LENGTH(raw_text) > 0 
+             AND document_id IS NOT NULL 
+             AND generated_at IS NOT NULL THEN 'valid'
         ELSE 'invalid'
     END as data_quality_status
-FROM iceberg.legal.documents
-WHERE load_timestamp >= @start_date
-  AND load_timestamp < @end_date; 
+FROM iceberg.legal.documents_snapshot.branch_staging
+WHERE generated_at >= @start_date
+  AND generated_at < @end_date; 

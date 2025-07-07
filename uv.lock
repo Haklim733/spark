@@ -1923,7 +1923,7 @@ requires-dist = [
     { name = "pyspark", extras = ["connect", "sql"], specifier = ">=3.5.0,<4.0.0" },
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "setuptools", specifier = ">=80.9.0" },
-    { name = "sqlmesh", extras = ["postgres", "web"], specifier = ">=0.164.0" },
+    { name = "sqlmesh", extras = ["postgres", "web", "pyspark"], specifier = ">=0.164.0" },
 ]
 
 [package.metadata.requires-dev]

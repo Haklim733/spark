@@ -372,6 +372,23 @@ class HybridLogger:
 
         return logger
 
+    def _convert_numpy_types(self, obj):
+        """Convert NumPy types to Python native types for JSON serialization"""
+        import numpy as np
+
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {key: self._convert_numpy_types(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_numpy_types(item) for item in obj]
+        else:
+            return obj
+
     def _log_to_jvm_or_python(
         self, logger_name: str, structured_data: Dict[str, Any], level: str = "info"
     ):
@@ -386,6 +403,9 @@ class HybridLogger:
             structured_data["timestamp"] = int(time.time() * 1000)
         if "job_id" not in structured_data:
             structured_data["job_id"] = self.job_id
+
+        # Convert NumPy types to Python native types for JSON serialization
+        structured_data = self._convert_numpy_types(structured_data)
 
         log_message = json.dumps(structured_data)
 

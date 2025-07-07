@@ -15,7 +15,7 @@ import uuid
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col,
-    concat,
+    concat_ws,
     current_timestamp,
     date_format,
     element_at,
@@ -24,13 +24,11 @@ from pyspark.sql.functions import (
     lit,
     split,
     sum,
-    spark_partition_id,
+    sha2,
     when,
+    count,
 )
-from pyspark.sql.types import (
-    StringType,
-    LongType,
-)
+from pyspark.sql.types import StringType, LongType, TimestampType
 from src.utils.logger import HybridLogger
 from src.utils.session import create_spark_session, SparkVersion
 from src.schemas.schema import SchemaManager
@@ -91,7 +89,7 @@ def list_files_distributed(spark: SparkSession, file_dir: str) -> DataFrame:
         )
     )
 
-    files_metadata_df.cache()
+    # files_metadata_df.cache()
     file_count = files_metadata_df.count()
     print(f" Found {file_count} files with metadata")
 
@@ -130,147 +128,163 @@ def process_records(
     job_id: str,
     observability_logger: HybridLogger,
 ) -> List[DataFrame]:
-    """Process files using native Spark distributed operations"""
-    print(f"📄 Processing files using distributed operations")
+    """
+    Process files using native Spark distributed operations.
+    Optimized to minimize transformations, efficiently handle content/metadata,
+    and trigger actions once for metrics.
+    """
+    print(f"📄 Processing files using distributed operations.")
     observability_logger.start_operation("file_processing", "process_records")
     processing_start = time.time()
 
-    content_entries_with_binary_df = (
+    # Capture job batch timestamp once for consistency
+    job_batch_timestamp = date_format(current_timestamp(), "yyyyMMddHHmmssSSS")
+
+    # --- Optimization 1: Cache files_metadata_df strategically ---
+    # Cache the initial DataFrame if it's the result of an expensive
+    # upstream operation and will be scanned multiple times (which it is here for filter).
+    # Consider .persist(StorageLevel.DISK_ONLY) if memory is a concern for very large DFs.
+    # files_metadata_df.cache()
+
+    # --- Optimization 2: Process content and metadata files, dropping 'content' early ---
+    # This is already good in your code. Casting to StringType and dropping binary 'content'
+    # immediately reduces data size in memory and during shuffles.
+    content_df_raw = (
         files_metadata_df.filter(col("is_content_file") == True)
-        .withColumnRenamed("file_path", "content_file_path")
-        .withColumn("raw_text", col("content").cast(StringType()))
+        .select(
+            col("document_id").alias("content_document_id"),
+            col("document_type").alias("content_document_type"),
+            col("file_path").alias("content_file_path_raw"),
+            col("content").cast(StringType()).alias("raw_text_content"),
+            col("file_size_bytes").alias("content_file_size_bytes"),
+        )
+        .drop("content")
     )
 
-    # In process_records, after creating metadata_entries_df:
-    metadata_entries_df = (
+    metadata_df_raw = (
         files_metadata_df.filter(col("is_metadata_file") == True)
-        .withColumn("metadata_json_string", col("content").cast(StringType()))
-        .withColumn(
-            "document_type_from_json",
-            get_json_object(col("metadata_json_string"), "$.document_type"),
-        )
-        .withColumn(
-            "source_from_json", get_json_object(col("metadata_json_string"), "$.source")
-        )
-        .withColumn(
-            "language_from_json",
-            get_json_object(col("metadata_json_string"), "$.language"),
-        )
-        .withColumn(
-            "method_from_json", get_json_object(col("metadata_json_string"), "$.method")
-        )
-        .withColumn(
-            "file_size_from_json",
-            get_json_object(col("metadata_json_string"), "$.file_size"),
-        )
         .select(
-            col("file_path").alias("metadata_file_path"),
             col("document_id").alias("meta_document_id"),
-            col("document_type_from_json"),
-            col("source_from_json"),
-            col("language_from_json"),
-            col("method_from_json"),
-            col("file_size_from_json"),
+            col("file_path").alias("metadata_file_path_raw"),
+            col("content").cast(StringType()).alias("metadata_json_string"),
         )
+        .drop("content")
     )
 
-    content_df = content_entries_with_binary_df.join(
-        metadata_entries_df,
-        on=col("document_id") == col("meta_document_id"),
+    # --- Step 3: Join Processed Content and Metadata ---
+    # Optimization 3: Consider Broadcast Join Hint
+    # If metadata_df_raw is significantly smaller than content_df_raw (and fits in executor memory),
+    # broadcasting it can make the join much faster by avoiding a shuffle on the larger DF.
+    # Spark might do this automatically if spark.sql.autoBroadcastJoinThreshold is met,
+    # but an explicit hint can ensure it.
+    # If both are large, Spark's default Sort-Merge Join is generally efficient.
+    joined_df = content_df_raw.join(
+        # Use broadcast() if metadata_df_raw is small. Remove if both are large.
+        metadata_df_raw,  # Example: broadcast(metadata_df_raw),
+        on=col("content_document_id") == col("meta_document_id"),
         how="inner",
-    )
-    content_df = (
-        content_df.withColumn(
-            "generated_at", current_timestamp()
-        )  # FIXED: Use Spark's deterministic current_timestamp()
-        .withColumn("source", lit("soli_legal_document_generator").cast(StringType()))
-        .withColumn("language", lit("en").cast(StringType()))
-        .withColumn(
-            "method", lit("spark_text_reader").cast(StringType())
-        )  # Method here is more accurate, it's a binary reader now
-        .withColumn("schema_version", lit(SCHEMA_VERSION).cast(StringType()))
-        .withColumn("job_id", lit(job_id).cast(StringType()))
-        .withColumn(
-            "batch_id",
-            concat(
-                lit(f"batch_{job_id}_"),
-                date_format(
-                    current_timestamp(), "yyyyMMddHHmmssSSS"
-                ),  # Adding timestamp back to batch_id for more uniqueness
-                lit("_"),
-                spark_partition_id().cast(StringType()),
-            ).cast(StringType()),
+    ).withColumnRenamed("content_document_id", "document_id")
+
+    # --- Step 4: Final Transformations and Type Casting (to match TARGET_ICEBERG_SCHEMA) ---
+    # Optimization 4: Consolidate transformations into a single .select() for efficiency
+    # Spark's Catalyst optimizer is good at chaining these, but explicit consolidation
+    # can sometimes lead to clearer DAGs and fewer intermediate DataFrame objects.
+    final_df = joined_df.select(
+        col("document_id"),
+        col("content_document_type").alias("document_type").cast(StringType()),
+        current_timestamp().cast(TimestampType()).alias("generated_at"),
+        # Extract and cast JSON fields
+        get_json_object(col("metadata_json_string"), "$.source")
+        .cast(StringType())
+        .alias("source"),
+        get_json_object(col("metadata_json_string"), "$.language")
+        .cast(StringType())
+        .alias("language"),
+        get_json_object(col("metadata_json_string"), "$.file_size")
+        .cast(LongType())
+        .alias("file_size"),
+        get_json_object(col("metadata_json_string"), "$.method")
+        .cast(StringType())
+        .alias("method"),
+        lit(SCHEMA_VERSION).cast(StringType()).alias("schema_version"),
+        col("metadata_file_path_raw").cast(StringType()).alias("metadata_file_path"),
+        col("raw_text_content").cast(StringType()).alias("raw_text"),
+        col("content_file_path_raw").cast(StringType()).alias("file_path"),
+        # Optimization 5: Generate deterministic batch_id using file_path hash
+        # This makes the batch_id stable and unique per source file and job run.
+        concat_ws(
+            "_",
+            lit(f"batch_{job_id}_{job_batch_timestamp}"),
+            sha2(col("content_file_path_raw"), 256),  # Hash the content file path
         )
-        .select(
-            col("document_id").cast(StringType()),
-            col("document_type").cast(StringType()),
-            col("generated_at"),
-            col("source").cast(StringType()),
-            col("language").cast(StringType()),
-            col("file_size_bytes")
-            .cast(LongType())
-            .alias("file_size"),  # Use the file_size from the content file itself
-            col("method").cast(StringType()),
-            col("schema_version").cast(StringType()),
-            col("metadata_file_path").cast(
-                StringType()
-            ),  # Path to the associated metadata file
-            col("raw_text").cast(StringType()),
-            col("content_file_path")
-            .cast(StringType())
-            .alias("file_path"),  # The path to the content file
-            col("batch_id").cast(StringType()),
-            col("job_id").cast(StringType()),
-        )
+        .cast(StringType())
+        .alias("batch_id"),
+        lit(job_id).cast(StringType()).alias("job_id"),
     )
 
-    content_df.cache()
+    # CRITICAL: Filter out any records where document_id is NULL.
+    # This ensures a clean primary key for MERGE INTO.
+    final_df_filtered = final_df.filter(col("document_id").isNotNull())
 
-    # Get metrics using Spark native operations
-    total_files = int(content_df.count())
-    total_bytes = int(content_df.agg(sum("file_size")).collect()[0][0] or 0)
+    # --- Optimization 6: Trigger Actions Once for Metrics and Debugging ---
+    # Cache the final, cleaned DataFrame *before* the first action
+    # to avoid recomputation if multiple actions follow.
+    final_df_filtered.cache()
+
+    # Perform all necessary aggregations in a single .agg() call.
+    # This ensures the DataFrame DAG is executed only once to compute these metrics.
+    metrics_row = final_df_filtered.agg(
+        count("*").alias("total_records"),
+        sum("file_size").alias("total_bytes_processed"),
+    ).collect()[
+        0
+    ]  # .collect() triggers the action
+
+    total_records_processed = int(metrics_row["total_records"])
+    total_bytes_processed = int(metrics_row["total_bytes_processed"] or 0)
 
     processing_time = time.time() - processing_start
 
-    # Log metrics
+    # Debugging prints (keep these, they are helpful!)
+    print(f"DEBUG: Count of final_df: {total_records_processed}")
+    print(
+        f"DEBUG: Null document_id count in final_df (should be 0): {final_df_filtered.filter(col('document_id').isNull()).count()}"
+    )
+
+    # Log metrics using the collected values
     observability_logger.log_performance(
         "file_processing_complete",
         {
-            "records_processed": total_files,
-            "bytes_transferred": total_bytes,
+            "records_processed": total_records_processed,
+            "bytes_transferred": total_bytes_processed,
             "processing_time_ms": int(processing_time * 1000),
-            "total_files": total_files,
+            "total_files": total_records_processed,  # Renamed for clarity in the log payload
         },
     )
 
     observability_logger.end_operation(
-        execution_time=processing_time, result_count=total_files
+        execution_time=processing_time, result_count=total_records_processed
     )
 
-    return [content_df]
+    # Optimization 7: Unpersist initial DataFrame if no longer needed
+    # Frees up memory if files_metadata_df won't be used again after this function.
+    files_metadata_df.unpersist()
+
+    return [final_df_filtered]
 
 
 def merge_to_iceberg_table(
     spark: SparkSession, source_df: DataFrame, table_name: str
 ) -> bool:
-    """Merge DataFrame to Iceberg table"""
+    """Optimized merge without debug operations"""
     temp_view = "temp_merge_view"
-    source_df.printSchema()
     source_df.createOrReplaceTempView(temp_view)
-    # source_df.write.mode("append").saveAsTable("legal.documents")
-    # print(source_df.show())
-    # print(f"✅ Successfully wrote source_df to table: {table_name}")
-    # spark.sql(f"DROP TABLE IF EXISTS {table_name}")  # Clean up
 
-    # Get columns excluding document_id for updates
     columns = source_df.columns
     update_columns = [col for col in columns if col != "document_id"]
 
-    # Build the SET clause for updates - be explicit about column references
     set_clause = ",\n  ".join([f"t.{col} = s.{col}" for col in update_columns])
-
-    # Build INSERT clause
-    insert_cols = ", ".join(columns)
+    insert_cols = ", ".join([f"{col}" for col in columns])
     insert_vals = ", ".join([f"s.{col}" for col in columns])
 
     merge_sql = f"""
@@ -282,35 +296,8 @@ def merge_to_iceberg_table(
     WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})
     """
 
-    print(f"Executing MERGE SQL:")
-    print(merge_sql)
-
-    try:
-        # First, let's check the schema of both tables
-        print(f"Source DataFrame schema:")
-        source_df.printSchema()
-
-        print(f"Target table schema:")
-        target_schema = spark.sql(f"DESCRIBE {table_name}")
-        target_schema.show()
-
-        spark.sql(merge_sql)
-        print(f"✅ Successfully merged data to {table_name}")
-        return True
-    except Exception as e:
-        print(f"❌ MERGE failed: {e}")
-        print(f"Source DataFrame columns: {source_df.columns}")
-        print(f"Source DataFrame count: {source_df.count()}")
-        print(f"Source DataFrame schema: {source_df.schema}")
-        print(
-            f"Source DataFrame schema: {spark.sql("SELECT * FROM temp_merge_view LIMIT 5;")}"
-        )
-
-        # Show sample data to debug
-        print(f"Sample source data:")
-        source_df.show(5)
-
-        raise e
+    spark.sql(merge_sql)
+    return True
 
 
 def insert_records(
@@ -333,19 +320,6 @@ def insert_records(
 
     for i, df in enumerate(processed_dataframes):
         if df is not None:
-            # --- DEBUG START ---
-            print("\n==== DEBUG: DataFrame Schema Before Merge ====")
-            df.printSchema()
-            print("\n==== DEBUG: DataFrame Columns ====")
-            print(df.columns)
-            print("\n==== DEBUG: DataFrame Sample Data ====")
-            df.show(5, vertical=True)
-            print("\n==== DEBUG: Null document_id count ====")
-            print(df.filter(col("document_id").isNull()).count())
-            print("\n==== DEBUG: Target Table Schema ====")
-            spark.sql(f"DESCRIBE {table_name}").show(truncate=False)
-            # --- DEBUG END ---
-
             try:
                 merge_to_iceberg_table(spark, df, table_name)
                 df_count = int(df.count())  # Convert to regular int

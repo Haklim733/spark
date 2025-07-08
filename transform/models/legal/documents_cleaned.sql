@@ -1,12 +1,16 @@
 MODEL (
     name legal.documents_cleaned,
-    kind INCREMENTAL_BY_TIME_RANGE (
+    {# kind INCREMENTAL_BY_TIME_RANGE (
         time_column generated_at
+    ), #}
+    kind FULL,
+    grain [document_id],
+    {# cron '@daily', #}
+    audits (
+        not_null(columns := (document_id, document_type, raw_text, generated_at, file_path, source, language, file_size, method, schema_version, metadata_file_path, batch_id, job_id))
     ),
-    grain [document_id, generated_at],
 );
 
--- Reference existing table without schema management
 SELECT 
     document_id,
     document_type,
@@ -38,6 +42,6 @@ SELECT
              AND generated_at IS NOT NULL THEN 'valid'
         ELSE 'invalid'
     END as data_quality_status
-FROM iceberg.legal.documents_snapshot.branch_staging
-WHERE generated_at >= @start_date
-  AND generated_at < @end_date; 
+FROM legal.documents_snapshot.branch_staging
+{# WHERE generated_at >= @start_date
+  AND generated_at < @end_date;  #}

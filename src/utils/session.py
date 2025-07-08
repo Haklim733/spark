@@ -286,11 +286,9 @@ def create_spark_session(
         SparkVersion.SPARK_CONNECT_3_5,
     ]:
         # For Spark Connect, use the consolidated session function
-        return create_spark_connect_session(
+        return _create_spark_connect_session(
             app_name=app_name,
-            iceberg_config=iceberg_config,
-            s3_config=s3_config,
-            **merged_configs,
+            spark_params=merged_configs,
         )
     elif spark_version in [SparkVersion.SPARK_3_5, SparkVersion.SPARK_4_0]:
         return _create_pyspark_session(app_name=app_name, spark_params=merged_configs)
@@ -322,85 +320,9 @@ def _create_src_archive() -> str:
     return temp_path
 
 
-def create_spark_connect_session(
-    app_name: str = None,
-    iceberg_config: Optional[IcebergConfig] = None,
-    s3_config: Optional[S3FileSystemConfig] = None,
-    add_artifacts: bool = False,
-    **additional_configs,
-) -> SparkSession:
-    """
-    Create a Spark Connect session with optional Iceberg configuration
-
-    Args:
-        app_name: Name of the Spark application
-        iceberg_config: Optional IcebergConfig for Iceberg integration
-        s3_config: Optional S3FileSystemConfig for S3/MinIO access
-        add_artifacts: Whether to add src directory as artifacts
-        **additional_configs: Additional Spark configurations
-
-    Returns:
-        SparkSession: Configured Spark Connect session
-    """
-    # Auto-detect app name from __file__ if not provided
-    if app_name is None:
-        import inspect
-
-        try:
-            # Get the calling frame
-            frame = inspect.currentframe()
-            while frame:
-                frame = frame.f_back
-                if frame and frame.f_globals.get("__file__"):
-                    # Extract filename without extension
-                    app_name = os.path.splitext(
-                        os.path.basename(frame.f_globals["__file__"])
-                    )[0]
-                    break
-        except Exception:
-            app_name = "SparkConnectApp"
-
-    # Start with additional configs
-    spark_params = {**additional_configs}
-
-    # Add S3A filesystem configuration if provided
-    if s3_config:
-        spark_params.update(s3_config.config)
-
-    # Add Iceberg configuration if provided
-    if iceberg_config:
-        spark_params.update(iceberg_config.config)
-
-    # Add artifacts flag if requested
-    if add_artifacts:
-        spark_params["spark.connect.add.artifacts"] = "true"
-
-    # Note: Spark Connect doesn't support event logging configuration
-    # Event logs are handled by the Spark Connect server itself
-    # We only create the directory structure for consistency
-    log_dir = f"/opt/bitnami/spark/logs/app/{app_name}"
-    if os.path.exists("/opt/bitnami/spark") or os.getenv("SPARK_HOME", "").startswith(
-        "/opt/bitnami"
-    ):
-        # We're in Docker environment
-        try:
-            os.makedirs(log_dir, exist_ok=True)
-        except PermissionError:
-            print(f"⚠️  Warning: Could not create log directory {log_dir}.")
-    else:
-        # We're running locally, use a local log directory
-        local_log_dir = f"./spark-logs/app/{app_name}"
-        try:
-            os.makedirs(local_log_dir, exist_ok=True)
-        except Exception as e:
-            print(f"⚠️  Warning: Could not create log directory: {e}")
-
-    return _create_spark_connect_session(app_name, spark_params)
-
-
 def _create_spark_connect_session(
     app_name: str,
-    spark_params: Dict[str, str] = None,
+    spark_params: Optional[Dict[str, str]] = None,
     add_artifacts: bool = False,
 ) -> SparkSession:
     """

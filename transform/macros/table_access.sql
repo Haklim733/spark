@@ -3,21 +3,14 @@
 
 -- Legal documents table access macro
 @IF(gateway == 'local')
-    iceberg_scan('s3://data/wh/legal/documents')
+    iceberg_scan('s3://data/wh/legal/documents_snapshot')
 @ELSE
     iceberg.legal.documents
 @ENDIF
 
--- NYC taxi table access macro  
-@IF(gateway == 'local')
-    iceberg_scan('s3://data/wh/nyc_taxi_data/yellow_tripdata')
-@ELSE
-    iceberg.nyc_taxi_data.yellow_tripdata
-@ENDIF
-
 -- Batch metrics table access macro
 @IF(gateway == 'local')
-    iceberg_scan('s3://data/wh/admin/batch_metrics')
+    iceberg_scan('s3://data/wh/dataops/job_logs')
 @ELSE
-    iceberg.admin.batch_metrics
+    iceberg.dataops.job_logs
 @ENDIF 

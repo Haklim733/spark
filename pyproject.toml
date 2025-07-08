@@ -3,7 +3,7 @@ name = "spark"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = "~=   3.12"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "pyspark[connect,sql]>=3.5.0,<4.0.0",
     "pytest>=8.4.1",
@@ -11,7 +11,7 @@ dependencies = [
     "jsonschema>=4.24.0",
     "faker>=28.4.1",
     "psycopg2-binary>=2.9.10",
-    "sqlmesh[postgres,web,pyspark]>=0.164.0",
+    "sqlmesh[postgres,web]==0.196.3",
     "setuptools>=80.9.0",
 ]
 
@@ -45,20 +45,3 @@ markers = [
 notebook = [
     "jupyter>=1.1.1",
 ]
-
-# Spark Integration Test Configuration
-# ===================================
-# By default, spark_integration tests are excluded to speed up regular test runs.
-# To include spark integration tests, use one of these commands:
-#
-# Run all tests including spark integration:
-#   pytest -m "spark_integration"
-#
-# Run only spark integration tests:
-#   pytest tests/integ/spark/ -v
-#
-# Run all tests without any exclusions:
-#   pytest -m "not slow"  # This includes spark tests since they're not marked as slow
-#
-# Exclude spark tests explicitly:
-#   pytest -m "not spark_integration"

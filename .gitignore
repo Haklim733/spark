@@ -11,7 +11,11 @@ data
 
 # duckdb
 *.db
+*.db.wal
 
 #jars
 **/jars
 spark
+
+derby.log
+metastore_db

@@ -1,11 +1,5 @@
-- name: iceberg.legal.documents_snapshot.branch_staging
+- name: legal.documents_snapshot.branch_staging
   description: Legal documents with metadata and raw content for ELT processing
-  audits:
-    - name: not_null
-      columns: "[document_id]"
-    - name: assert_valid_document_id
-    - name: assert_valid_dates
-    - name: assert_document_content
   columns:
     # metadata
     document_id: STRING

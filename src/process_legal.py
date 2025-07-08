@@ -314,9 +314,9 @@ def insert_dummy_data(spark: SparkSession, table_name: str) -> bool:
     ]
 
     # Create DataFrame using v2 API approach
-    df = spark.createDataFrame(dummy_data)
-    df = df.withColumn("generated_at", to_timestamp("generated_at"))
-    df.writeTo(table_name).createOrReplace()
+    # df = spark.createDataFrame(dummy_data)
+    # df = df.withColumn("generated_at", to_timestamp("generated_at"))
+    # df.writeTo(table_name).createOrReplace()
     return True
 
 

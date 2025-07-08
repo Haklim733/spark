@@ -25,11 +25,13 @@ CREATE OR REPLACE TABLE legal.documents_snapshot (
     job_id STRING COMMENT 'Job identifier for operational tracking and debugging'    
 )
 USING iceberg
+PARTITIONED BY (day(generated_at))
 TBLPROPERTIES (
     'write.format.default' = 'parquet',
     'write.parquet.compression-codec' = 'zstd',
     'write.merge.isolation-level' = 'snapshot',
     'branch.enabled' = 'true',
+    "write.wap.enabled" = 'true',
     'comment' = 'Raw legal documents with metadata as individual columns for ELT processing'
 ); 
 

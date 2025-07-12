@@ -790,3 +790,177 @@ When Spark Connect operations fail:
 6. ✅ **Restart Spark Connect**: `docker-compose restart spark-connect`
 7. ✅ **Recreate containers if needed**: `docker-compose down && docker-compose up -d`
 8. ✅ **Check MinIO user permissions**: Verify user exists and has proper permissions 
+
+## Performance Configuration Guide
+
+This section explains the performance-related configurations available in Spark and their impact on different workloads.
+
+### JVM Performance Optimizations (corrected format)
+spark.driver.extraJavaOptions -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:InitiatingHeapOccupancyPercent=35 -XX:+UnlockExperimentalVMOptions
+spark.executor.extraJavaOptions -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:InitiatingHeapOccupancyPercent=35 -XX:+UnlockExperimentalVMOptions
+
+### Memory Management (corrected defaults)
+spark.memory.fraction 0.6
+spark.memory.storageFraction 0.5
+spark.memory.offHeap.enabled true
+spark.memory.offHeap.size 128m
+
+### SQL Engine Optimizations (corrected values)
+spark.sql.adaptive.enabled true
+spark.sql.adaptive.localShuffleReader.enabled true
+spark.sql.adaptive.skewJoin.enabled true
+spark.sql.adaptive.coalescePartitions.enabled true
+spark.sql.adaptive.advisoryPartitionSizeInBytes 33554432
+spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes 268435456
+spark.sql.adaptive.skewJoin.skewedPartitionFactor 5
+
+### Broadcast join optimizations
+spark.sql.autoBroadcastJoinThreshold 1048576
+spark.sql.broadcastTimeout 300
+
+### Partition handling (corrected values)
+spark.sql.files.maxPartitionBytes 33554432
+spark.sql.files.openCostInBytes 4194304
+spark.sql.files.maxRecordsPerFile 1000000
+
+### Network and I/O (corrected)
+spark.network.timeout 120s
+spark.executor.heartbeatInterval 30s
+spark.network.io.preferDirectBufs true
+spark.network.io.maxRetries 3
+spark.network.io.retryWait 5s
+
+### S3/MinIO specific optimizations
+spark.hadoop.fs.s3a.experimental.input.fadvise normal
+spark.hadoop.fs.s3a.readahead.range 1048576
+spark.hadoop.fs.s3a.block.size 134217728
+spark.hadoop.fs.s3a.connection.ssl.enabled false
+spark.hadoop.fs.s3a.path.style.access true
+
+### Shuffle optimizations (corrected)
+spark.shuffle.service.enabled true
+spark.shuffle.compress true
+spark.shuffle.spill.compress true
+spark.shuffle.spill.compress.codec lz4
+spark.shuffle.file.buffer 32768
+spark.shuffle.spill.batchSize 10000
+spark.shuffle.io.maxRetries 3
+spark.shuffle.io.retryWait 5s
+
+### Execution optimizations
+spark.sql.execution.arrow.pyspark.enabled true
+spark.sql.execution.arrow.pyspark.fallback.enabled true
+spark.sql.execution.arrow.maxRecordsPerBatch 10000
+
+### Iceberg optimizations (corrected)
+spark.sql.catalog.iceberg.write.parquet.row-group-size-bytes 134217728
+spark.sql.catalog.iceberg.write.parquet.page.size.bytes 1048576
+spark.sql.catalog.iceberg.write.parquet.dict.enabled true
+spark.sql.catalog.iceberg.write.parquet.compression.codec snappy
+spark.sql.catalog.iceberg.read.parquet.vectorization.enabled true
+spark.sql.catalog.iceberg.read.parquet.vectorization.batch-size 10000
+
+### Critical Iceberg extension (missing)
+spark.sql.extensions org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+
+### Resource Allocation for Small Clusters
+
+**Purpose**: Optimize resource allocation for memory-constrained environments.
+
+```conf
+# Resource allocation for 1GB workers
+spark.executor.memory 1g
+spark.executor.cores 1
+spark.driver.memory 1g
+spark.cores.max 2
+spark.dynamicAllocation.enabled true
+spark.dynamicAllocation.minExecutors 1
+spark.dynamicAllocation.maxExecutors 2
+spark.dynamicAllocation.initialExecutors 1
+```
+
+**What each setting does**:
+- **`executor.memory 1g`**: Memory per executor - matches worker memory
+- **`executor.cores 1`**: CPU cores per executor - one core per worker
+- **`driver.memory 1g`**: Driver memory - same as executor for consistency
+- **`cores.max 2`**: Maximum total cores - matches 2 workers
+- **`dynamicAllocation.enabled`**: Enables dynamic executor allocation
+- **`minExecutors 1`**: Minimum executors - ensures at least one
+- **`maxExecutors 2`**: Maximum executors - matches worker count
+- **`initialExecutors 1`**: Initial executors - starts with one
+
+**When to use**: Small clusters (1-4 workers), memory-constrained environments, development/testing.
+
+### Monitoring and Metrics
+
+**Purpose**: Enable performance monitoring and metrics collection.
+
+```conf
+# Performance monitoring
+spark.eventLog.enabled true
+spark.eventLog.dir file:///opt/bitnami/spark/logs/events
+spark.sql.statistics.size.autoUpdate.enabled true
+spark.sql.statistics.histogram.enabled true
+spark.sql.statistics.histogram.numBins 254
+```
+
+**What each setting does**:
+- **`eventLog.enabled`**: Enables event logging - tracks application performance
+- **`eventLog.dir`**: Directory for event logs - stores performance data
+- **`statistics.size.autoUpdate.enabled`**: Auto-updates table statistics - better query planning
+- **`statistics.histogram.enabled`**: Enables column histograms - better join optimization
+- **`statistics.histogram.numBins 254`**: Number of histogram bins - detailed statistics
+
+**When to use**: Production environments, performance tuning, debugging performance issues.
+
+### Configuration by Use Case
+
+#### Small Data, Small Memory (1GB workers)
+```conf
+# Optimized for small datasets and memory
+spark.memory.fraction 0.7
+spark.memory.storageFraction 0.3
+spark.sql.adaptive.advisoryPartitionSizeInBytes 32m
+spark.sql.autoBroadcastJoinThreshold 1m
+spark.sql.files.maxPartitionBytes 32m
+spark.driver.extraJavaOptions -XX:+UseG1GC -XX:MaxGCPauseMillis=200
+```
+
+#### Large Data, Small Memory (1GB workers)
+```conf
+# Optimized for large datasets with memory constraints
+spark.memory.fraction 0.6
+spark.memory.storageFraction 0.2
+spark.sql.adaptive.advisoryPartitionSizeInBytes 16m
+spark.sql.files.maxPartitionBytes 16m
+spark.shuffle.spill.compress true
+spark.memory.offHeap.enabled true
+spark.memory.offHeap.size 256m
+```
+
+#### High-Performance Computing
+```conf
+# Optimized for maximum performance
+spark.memory.fraction 0.8
+spark.memory.storageFraction 0.1
+spark.sql.adaptive.advisoryPartitionSizeInBytes 128m
+spark.sql.autoBroadcastJoinThreshold 10m
+spark.sql.files.maxPartitionBytes 128m
+spark.network.io.preferDirectBufs true
+spark.sql.execution.arrow.pyspark.enabled true
+```
+
+### Performance Tuning Checklist
+
+When optimizing Spark performance:
+
+1. ✅ **Match memory settings to cluster size**: Ensure executor memory matches worker memory
+2. ✅ **Optimize for your data size**: Use smaller partitions for small data, larger for big data
+3. ✅ **Enable adaptive execution**: Let Spark optimize at runtime
+4. ✅ **Configure garbage collection**: Use G1GC for small heaps, tune pause times
+5. ✅ **Optimize network I/O**: Use direct buffers, configure timeouts
+6. ✅ **Enable compression**: Use LZ4 for shuffle, Snappy for storage
+7. ✅ **Use off-heap memory**: Reduce GC pressure in memory-constrained environments
+8. ✅ **Monitor performance**: Enable event logging and statistics
+9. ✅ **Test configurations**: Benchmark with your actual data and workloads
+10. ✅ **Consider storage type**: Optimize for S3/MinIO vs local storage 

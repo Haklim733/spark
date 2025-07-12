@@ -80,11 +80,9 @@ services:
       - SPARK_CONNECT_PORT=15002
       - SPARK_VERSION=3.5.6
       - SPARK_MAJOR_VERSION=3.5
-      # Spark Connect configuration
       - SPARK_CONNECT_GRPC_BINDING_PORT=15002
       - SPARK_CONNECT_GRPC_BINDING_HOST=0.0.0.0
       - SPARK_CONNECT_GRPC_ARROW_ENABLED=true
-      # Spark Connect server configuration
       - SPARK_CONNECT_SERVER_PORT=15002
       - SPARK_CONNECT_SERVER_HOST=0.0.0.0
       - AWS_REGION=us-east-1
@@ -115,24 +113,14 @@ services:
       - SPARK_WEBUI_PORT=8080
       - SPARK_MASTER_LOG=/opt/bitnami/spark/logs/spark-master.out
       - SPARK_WORKER_LOG=/opt/bitnami/spark/logs/spark-worker.out
-      - SPARK_WORKER_CORES=1
-      - SPARK_WORKER_MEMORY=1G
-      - SPARK_DRIVER_MEMORY=1G
-      - SPARK_EXECUTOR_MEMORY=1G
       - SPARK_WORKLOAD=worker
       - SPARK_LOCAL_IP=spark-worker
       - AWS_ACCESS_KEY_ID=admin
       - AWS_SECRET_ACCESS_KEY=password
       - AWS_REGION=us-east-1
       - SPARK_EXECUTOR_LOGS_DIR=/opt/bitnami/spark/logs/executor
-      # Spark 3.5 specific configurations
       - SPARK_VERSION=3.5.6
       - SPARK_MAJOR_VERSION=3.5
-      # Spark 3.5 performance optimizations
-      - SPARK_SQL_ADAPTIVE_ENABLED=true
-      - SPARK_SQL_ADAPTIVE_COALESCE_PARTITIONS_ENABLED=true
-      - SPARK_SQL_ADAPTIVE_SKEW_JOIN_ENABLED=true
-      - SPARK_SQL_ADAPTIVE_LOCAL_SHUFFLE_READER_ENABLED=true
     healthcheck:
       test: ["CMD", "netstat", "-tuln", "|", "grep", ":8081"]
       interval: 15s

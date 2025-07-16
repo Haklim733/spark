@@ -13,7 +13,7 @@ from .session import (
 )
 
 # Logging utilities
-from .logger import HybridLogger, MetricsTracker
+from .logger import HybridLogger
 
 # Log parsing utilities
 from .log_parser import main as parse_logs
@@ -26,7 +26,6 @@ __all__ = [
     "create_spark_session",
     # Logging
     "HybridLogger",
-    "MetricsTracker",
     # Log parsing
     "log_parser",
 ]

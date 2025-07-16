@@ -28,8 +28,7 @@ USING iceberg
 PARTITIONED BY (day(generated_at))
 TBLPROPERTIES (
     'write.format.default' = 'parquet',
-    'write.parquet.compression-codec' = 'zstd',
-    'write.merge.isolation-level' = 'snapshot',
+    'write.parquet.compression-codec' = 'snappy',
     'branch.enabled' = 'true',
     "write.wap.enabled" = 'true',
     'comment' = 'Raw legal documents with metadata as individual columns for ELT processing'

@@ -1,6 +1,7 @@
 -- Job Logs Fact Table - Single table with hierarchical structure
 -- Captures job-level, batch-level, and operation-level metrics in one table
 -- Uses NULL batch_id for job-level records, non-NULL for batch-level records
+CREATE NAMESPACE IF NOT EXISTS dataops;
 
 CREATE TABLE IF NOT EXISTS dataops.job_logs (
     -- Core identification
@@ -83,10 +84,10 @@ CREATE TABLE IF NOT EXISTS dataops.job_logs (
     updated_at TIMESTAMP COMMENT 'When the record was last updated'    
 )
 USING iceberg
-PARTITIONED BY (app_name, DATE(start_time))
+PARTITIONED BY (date(start_time), app_name)
 TBLPROPERTIES (
     'write.format.default' = 'parquet',
-    'write.parquet.compression-codec' = 'zstd',
+    'write.parquet.compression-codec' = 'snappy',
     'write.merge.isolation-level' = 'snapshot',
     'comment' = 'Job logs fact table with hierarchical structure: job-level, batch-level, and operation-level metrics'
 ); 

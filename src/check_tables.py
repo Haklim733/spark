@@ -5,12 +5,9 @@ Checks table existence and provides basic metadata information
 """
 
 import os
-from pathlib import Path
 from src.utils import (
     create_spark_session,
     SparkVersion,
-    IcebergConfig,
-    S3FileSystemConfig,
 )
 
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "admin")
@@ -73,24 +70,11 @@ def check_all_namespaces(spark):
 
 def main():
     """Main function to check tables"""
-
-    # Create S3 configuration
-    s3_config = S3FileSystemConfig(
-        endpoint="minio:9000",
-        region="us-east-1",
-        access_key=AWS_ACCESS_KEY_ID,
-        secret_key=AWS_SECRET_ACCESS_KEY,
-    )
-
-    # Create Iceberg configuration
-    iceberg_config = IcebergConfig(s3_config)
-
     # Create Spark session
     spark = create_spark_session(
         spark_version=SparkVersion.SPARK_CONNECT_3_5,
         app_name="CheckTables",
-        iceberg_config=iceberg_config,
-        s3_config=s3_config,
+        catalog="iceberg",
     )
 
     try:

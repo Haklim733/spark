@@ -1,18 +1,18 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Comprehensive Job and Spark Partition Metrics Schema for ELT Pipeline",
-  "description": "Schema capturing ALL metrics from HybridLogger: job-level, partition-level, operation-level, performance, business events, errors, and custom metrics with Spark-native partitioning",
-  "schema_version": "v3",
+  "title": "Consolidated Job and Spark Partition Metrics Schema for ELT Pipeline",
+  "description": "Streamlined schema using consolidated enums from metrics.py",
+  "schema_version": "v5",
   "type": "object",
   "properties": {
     "job_id": {
       "type": "string",
-      "description": "Unique job identifier for the entire application run (HybridLogger job_id)"
+      "description": "Unique job identifier for the entire application run"
     },
     "source": {
       "type": "string",
-      "enum": ["local", "minio", "s3", "hdfs", "api"],
-      "description": "Source system identifier"
+      "enum": ["local", "s3", "database", "api"],
+      "description": "Source system identifier - matches SourceSystem enum"
     },
     "target_table": {
       "type": "string",
@@ -26,17 +26,31 @@
     "job_start": {
       "type": "string",
       "format": "date-time",
-      "description": "When the entire job/application started (HybridLogger start_time)"
+      "description": "When the entire job started"
     },
     "job_end": {
       "type": "string",
       "format": "date-time",
-      "description": "When the entire job/application completed (HybridLogger shutdown)"
+      "description": "When the entire job completed"
     },
     
     "operation_name": {
       "type": "string",
-      "description": "Name of the operation being tracked (from HybridLogger start_operation/end_operation)"
+      "enum": [
+        "file_processing_complete",
+        "data_insertion_complete",
+        "table_exists_check",
+        "table_creation",
+        "table_validation",
+        "file_read",
+        "file_write",
+        "s3_operation",
+        "dataframe_operation",
+        "sql_query",
+        "job_start",
+        "job_complete"
+      ],
+      "description": "Operation types from consolidated Operation enum"
     },
     "operation_start": {
       "type": "string",
@@ -54,20 +68,51 @@
       "description": "Number of results from the operation"
     },
     
+    "inputs_discovered": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total inputs discovered (files, tables, API calls, etc.)"
+    },
+    "inputs_processed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total inputs processed"
+    },
+    "inputs_inserted": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total inputs successfully inserted"
+    },
+    "inputs_failed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total inputs that failed to process"
+    },
+    "inputs_missing": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total inputs expected but not found"
+    },
+    
+    "records_discovered": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total records discovered across all inputs"
+    },
     "records_processed": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total number of individual records processed across all files in this partition"
+      "description": "Total number of individual records processed"
     },
-    "records_loaded": {
+    "records_inserted": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total number of individual records successfully loaded"
+      "description": "Total number of individual records successfully inserted"
     },
     "records_failed": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total number of individual records that failed to load"
+      "description": "Total number of individual records that failed to process"
     },
     "records_missing": {
       "type": "integer",
@@ -75,105 +120,76 @@
       "description": "Total number of individual records that were expected but not found"
     },
     
+    "input_size_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Size of input data (files, result sets, etc.) in bytes"
+    },
     "record_size_bytes": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total size of all records processed in bytes"
-    },
-    "bytes_transferred": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "Total bytes transferred/processed"
-    },
-    "performance_operation": {
-      "type": "string",
-      "description": "Operation name from performance metrics (HybridLogger log_performance)"
-    },
-    "performance_execution_time_ms": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "Execution time from performance metrics"
-    },
-    "performance_timestamp": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "Timestamp from performance metrics"
+      "description": "Average record size in bytes"
     },
     
-    "partition_processing_metrics": {
-      "type": "object",
-      "properties": {
-        "partition_id": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Spark partition ID where the data was processed (spark_partition_id())"
-        },
-        "partition_count": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Total number of Spark partitions used for this processing"
-        },
-        "partition_size": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Number of files/records in this specific partition"
-        },
-        "partition_total_size_bytes": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Total size of all files in this partition in bytes"
-        },
-        "partition_skew_ratio": {
-          "type": "number",
-          "minimum": 0.0,
-          "maximum": 1.0,
-          "description": "Ratio indicating partition skew (0.0 = perfectly balanced, 1.0 = highly skewed)"
-        },
-        "partition_start": {
-          "type": "string",
-          "format": "date-time",
-          "description": "When this specific partition processing started"
-        },
-        "partition_end": {
-          "type": "string",
-          "format": "date-time",
-          "description": "When this specific partition processing completed"
-        },
-        "partition_processing_time_ms": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Time spent processing this specific partition (manually tracked)"
-        }
-      },
-      "required": [
-        "partition_id",
-        "partition_count",
-        "partition_size",
-        "partition_total_size_bytes",
-        "partition_start",
-        "partition_end",
-        "partition_processing_time_ms"
-      ],
-      "description": "Partition-specific processing metrics (only metrics that can be reliably captured)"
-    },
-    
-    "business_events_count": {
+    "execution_time_ms": {
       "type": "integer",
       "minimum": 0,
-      "description": "Number of business events logged (HybridLogger log_business_event)"
+      "description": "Total execution time in milliseconds"
     },
-    "business_event_types": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Types of business events encountered"
+    "insertion_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Time spent on data insertion in milliseconds"
+    },
+    "validation_time_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Time spent on validation in milliseconds"
+    },
+    
+    "partition_count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of Spark partitions used"
+    },
+    "executor_count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of Spark executors used"
+    },
+    "memory_usage_mb": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Peak memory usage in MB"
+    },
+    
+    "expected_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Expected number of records"
+    },
+    "actual_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Actual number of records found"
+    },
+    "schema_valid": {
+      "type": "boolean",
+      "description": "Whether schema validation passed"
+    },
+    "data_quality_valid": {
+      "type": "boolean",
+      "description": "Whether data quality validation passed"
+    },
+    "table_exists": {
+      "type": "boolean",
+      "description": "Whether target table exists"
     },
     
     "error_count": {
       "type": "integer",
       "minimum": 0,
-      "description": "Number of errors logged (HybridLogger log_error)"
+      "description": "Number of errors encountered"
     },
     "error_codes": {
       "type": "object",
@@ -181,144 +197,28 @@
         "type": "integer",
         "minimum": 0
       },
-      "description": "Distribution of error codes encountered during load"
+      "description": "Distribution of error codes encountered"
     },
     "error_summary": {
       "type": "string",
-      "description": "Human-readable summary of load results"
-    },
-    "error_types": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Types of errors encountered"
+      "description": "Human-readable summary of errors"
     },
     
-    "failed_files_by_partition": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "array",
-        "items": {
-          "type": "object",
-          "properties": {
-            "file_path": {
-              "type": "string",
-              "description": "Path to the failed file"
-            },
-            "document_id": {
-              "type": "string",
-              "description": "Document ID extracted from the file"
-            },
-            "document_type": {
-              "type": "string",
-              "description": "Type of document that failed"
-            },
-            "error_message": {
-              "type": "string",
-              "description": "Specific error message for this file"
-            },
-            "error_code": {
-              "type": "string",
-              "description": "Error code for this failure"
-            },
-            "record_size_bytes": {
-              "type": "integer",
-              "minimum": 0,
-              "description": "Size of the failed file in bytes"
-            },
-            "partition_id": {
-              "type": "integer",
-              "minimum": 0,
-              "description": "Spark partition ID where the file was processed"
-            },
-            "failure_timestamp": {
-              "type": "string",
-              "format": "date-time",
-              "description": "When this file failed processing"
-            }
-          },
-          "required": [
-            "file_path",
-            "error_message",
-            "error_code",
-            "partition_id",
-            "failure_timestamp"
-          ]
-        }
-      },
-      "description": "Detailed mapping of partition IDs to lists of failed files with their specific error information"
-    },
-    
-    "total_logs_generated": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "Total number of log entries generated (HybridLogger get_performance_summary)"
-    },
-    "async_logging_enabled": {
-      "type": "boolean",
-      "description": "Whether async logging was enabled"
-    },
-    
-    "validation_status": {
-      "type": "string",
-      "enum": ["complete_success", "partial_load", "load_failures", "unknown"],
-      "description": "Overall validation status of the partition"
-    },
     "job_status": {
       "type": "string",
-      "enum": ["success", "failed", "partial_success"],
-      "description": "Overall job status"
+      "enum": ["success", "failure", "partial_success", "in_progress", "error"],
+      "description": "Overall job status - matches OperationStatus enum"
     },
     
-    "spark_metrics": {
-      "type": "object",
-      "properties": {
-        "executor_count": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Number of Spark executors used"
-        },
-        "executor_memory_mb": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Memory allocated per executor in MB"
-        },
-        "driver_memory_mb": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Memory allocated to driver in MB"
-        },
-        "spark_version": {
-          "type": "string",
-          "description": "Spark version used"
-        },
-        "iceberg_version": {
-          "type": "string",
-          "description": "Iceberg version used"
-        },
-        "shuffle_read_bytes": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Total shuffle read bytes"
-        },
-        "shuffle_write_bytes": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Total shuffle write bytes"
-        },
-        "total_executor_time_ms": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Total executor time across all partitions"
-        }
-      },
-      "description": "Spark-specific metrics and configuration"
+    "job_type": {
+      "type": "string",
+      "enum": ["data_processing", "validation", "maintenance", "metrics"],
+      "description": "High-level job category - matches OperationType enum"
     },
     
     "created_by": {
       "type": "string",
-      "description": "User/system that initiated the load"
+      "description": "User/system that initiated the job"
     },
     "created_at": {
       "type": "string",
@@ -334,15 +234,15 @@
     "job_start",
     "job_end",
     "records_processed",
-    "records_loaded",
+    "records_inserted",
     "records_failed",
     "records_missing",
-    "record_size_bytes",
-    "bytes_transferred",
+    "execution_time_ms",
+    "error_count",
     "error_codes",
     "error_summary",
-    "validation_status",
     "job_status",
+    "job_type",
     "created_by",
     "created_at"
   ],
@@ -350,16 +250,60 @@
     "error_code": {
       "type": "string",
       "enum": [
-        "E001",
-        "E002", 
-        "E003",
-        "E004",
-        "E005",
-        "E006",
-        "E007",
+        "E001", "E002", "E003", "E004", "E005", "E006",
+        "E011", "E012", "E013", "E014", "E015",
+        "E021", "E022", "E023", "E024",
+        "E031", "E032", "E033",
+        "E041", "E042", "E043",
         "E999"
       ],
-      "description": "Standardized error codes: E001=FILE_NOT_FOUND, E002=PERMISSION_DENIED, E003=INVALID_FORMAT, E004=SCHEMA_MISMATCH, E005=NETWORK_ERROR, E006=TIMEOUT, E007=MEMORY_ERROR, E999=UNKNOWN_ERROR"
+      "description": "Error codes from consolidated ErrorCode enum"
+    },
+    "operation": {
+      "type": "string",
+      "enum": [
+        "file_processing_complete",
+        "data_insertion_complete",
+        "table_exists_check",
+        "table_creation",
+        "table_validation",
+        "file_read",
+        "file_write",
+        "s3_operation",
+        "dataframe_operation",
+        "sql_query",
+        "job_start",
+        "job_complete"
+      ],
+      "description": "Operation types from consolidated Operation enum"
+    },
+    "operation_metric": {
+      "type": "string", 
+      "enum": [
+        "inputs_discovered", "inputs_processed", "inputs_inserted", "inputs_failed", "inputs_missing",
+        "records_discovered", "records_processed", "records_inserted", "records_failed", "records_missing",
+        "input_size_bytes", "record_size_bytes",
+        "execution_time_ms", "insertion_time_ms", "validation_time_ms",
+        "partition_count", "executor_count", "memory_usage_mb",
+        "expected_count", "actual_count", "schema_valid", "data_quality_valid",
+        "table_exists", "status"
+      ],
+      "description": "Metric types from consolidated OperationMetric enum"
+    },
+    "operation_status": {
+      "type": "string",
+      "enum": ["success", "failure", "partial_success", "in_progress", "error"],
+      "description": "Status values from consolidated OperationStatus enum"
+    },
+    "source_system": {
+      "type": "string",
+      "enum": ["local", "s3", "database", "api"],
+      "description": "Source system identifiers from consolidated SourceSystem enum"
+    },
+    "operation_type": {
+      "type": "string",
+      "enum": ["data_processing", "validation", "maintenance", "metrics"],
+      "description": "High-level operation categories from consolidated OperationType enum"
     }
   }
 } 

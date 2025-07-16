@@ -31,9 +31,11 @@ class SchemaLoader:
             except Exception as e:
                 print(f"❌ Error loading schema {schema_file}: {e}")
 
-    def get_schema(self, schema_name: str) -> Optional[Dict[str, Any]]:
+    def get_schema(self, schema_name: str) -> Dict[str, Any]:
         """Get a specific schema by name"""
-        return self.schemas.get(schema_name)
+        if schema_name not in self.schemas:
+            raise ValueError(f"Schema {schema_name} not found")
+        return self.schemas[schema_name]
 
     def list_available_schemas(self) -> List[str]:
         """List all available schema names"""
@@ -50,6 +52,7 @@ class SchemaLoader:
 
         return {
             "name": schema_name,
+            "version": schema.get("version", "1.0.0"),
             "title": schema.get("title", schema_name),
             "description": schema.get("description", ""),
             "field_count": len(properties),

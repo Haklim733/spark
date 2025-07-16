@@ -34,12 +34,17 @@ class SparkConfig(ABC):
 class S3FileSystemConfig(SparkConfig):
     """Configuration class for S3 Filesystem settings (security/credential overrides only)"""
 
-    endpoint: str = "minio:9000"
+    endpoint: Optional[str] = "minio:9000"
     region: str = "us-east-1"
     access_key: Optional[str] = "admin"
     secret_key: Optional[str] = "password"
     path_style_access: bool = True
     ssl_enabled: bool = False
+
+    def __post_init__(self):
+        """Set default endpoint from environment variable"""
+        if self.endpoint is None:
+            self.endpoint = os.getenv("MINIO_ENDPOINT", "minio:9000")
 
     @property
     def config(self) -> Dict[str, str]:
@@ -62,9 +67,8 @@ class IcebergConfig(SparkConfig):
 
     s3_config: S3FileSystemConfig
     catalog_uri: str = "http://iceberg-rest:8181"
-    warehouse: str = "s3://iceberg/wh"
+    warehouse: str = "s3a://iceberg/wh"
     catalog_type: str = "rest"
-    catalog: str = "iceberg"
 
     @property
     def config(self) -> Dict[str, str]:
@@ -78,7 +82,6 @@ class IcebergConfig(SparkConfig):
             "spark.sql.catalog.iceberg.s3.secret-key": self.s3_config.secret_key
             or "password",
             "spark.sql.catalog.iceberg.s3.region": self.s3_config.region or "us-east-1",
-            "spark.sql.defaultCatalog": self.catalog,
             "spark.sql.catalog.iceberg.type": self.catalog_type,
             "spark.sql.catalog.iceberg.uri": self.catalog_uri,
             "spark.sql.catalog.iceberg.warehouse": self.warehouse,
@@ -193,8 +196,10 @@ class Log4jConfig(SparkConfig):
 
 
 def create_spark_session(
+    *,
     spark_version: SparkVersion = SparkVersion.SPARK_CONNECT_3_5,
     app_name: Optional[str] = None,
+    catalog: Optional[str] = "spark_catalog",
     iceberg_config: Optional[IcebergConfig] = None,
     performance_config: Optional[PerformanceConfig] = None,
     s3_config: Optional[S3FileSystemConfig] = None,
@@ -207,6 +212,7 @@ def create_spark_session(
     Args:
         spark_version: SparkVersion enum specifying the type of session to create
         app_name: Name of the Spark application (used as prefix for event logs)
+        catalog: Optional catalog to use (defaults to spark_catalog); enter iceberg catalog if using iceberg
         iceberg_config: Optional IcebergConfig for Iceberg integration (defaults to Iceberg)
         performance_config: Optional PerformanceConfig for performance tuning
         s3_config: Optional S3FileSystemConfig for S3/MinIO access without Iceberg
@@ -216,6 +222,7 @@ def create_spark_session(
     Returns:
         SparkSession: Configured Spark session
     """
+
     # Auto-detect app name from __file__ if not provided
     if app_name is None:
         app_name = Path(__file__).stem or "SparkApp"
@@ -286,14 +293,19 @@ def create_spark_session(
         SparkVersion.SPARK_CONNECT_3_5,
     ]:
         # For Spark Connect, use the consolidated session function
-        return _create_spark_connect_session(
+        spark = _create_spark_connect_session(
             app_name=app_name,
             spark_params=merged_configs,
         )
     elif spark_version in [SparkVersion.SPARK_3_5, SparkVersion.SPARK_4_0]:
-        return _create_pyspark_session(app_name=app_name, spark_params=merged_configs)
+        spark = _create_pyspark_session(app_name=app_name, spark_params=merged_configs)
     else:
         raise ValueError(f"Unsupported Spark version: {spark_version}")
+
+    if catalog:
+        spark.conf.set("spark.sql.defaultCatalog", catalog)
+
+    return spark
 
 
 def _create_src_archive() -> str:
@@ -339,7 +351,8 @@ def _create_spark_connect_session(
     if spark_params is None:
         spark_params = {}
 
-    spark_connect_server = os.getenv("SPARK_CONNECT_SERVER", "sc://localhost:15002")
+    # Use environment variable with proper default for Docker network
+    spark_connect_server = os.getenv("SPARK_CONNECT_SERVER", "sc://spark-connect:15002")
 
     builder = SparkSession.builder.appName(app_name).remote(spark_connect_server)
 
@@ -417,7 +430,8 @@ def _create_pyspark_session(
     for key, value in spark_params.items():
         builder = builder.config(key, value)
 
-    # Set master for regular PySpark
-    builder = builder.master("spark://spark-master:7077")
+    # Use environment variable with proper default for Docker network
+    master_url = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
+    builder = builder.master(master_url)
 
     return builder.getOrCreate()

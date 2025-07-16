@@ -153,6 +153,12 @@ list_buckets() {
     /usr/bin/mc ls minio/ || print_error "Could not list buckets"
 }
 
+mount_files() {
+    echo ""
+    print_status "Mounting files..."
+    /usr/bin/mc mirror /data/energy/ minio/raw/
+}
+
 # Main execution
 main() {
     echo "🚀 Initializing MinIO Data Lake Architecture..."
@@ -167,9 +173,9 @@ main() {
     # Create folder structure
     create_folder_structure
     
-    # Set public access for all buckets
-    set_public_access
-     
+    # Mount files
+    mount_files
+    
     # Display results
     display_bucket_structure
     display_access_info

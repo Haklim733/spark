@@ -4,7 +4,6 @@ services:
     build: 
       context: .
       dockerfile: docker/spark
-    container_name: spark-master
     hostname: spark-master
     networks:
       - spark-network
@@ -46,7 +45,6 @@ services:
     command: /opt/bitnami/spark/bin/spark-class org.apache.spark.deploy.master.Master --host spark-master --port 7077 --webui-port 8080
   spark-history:
     image: bitnami/spark:3.5.6
-    container_name: spark-history
     depends_on:
       spark-master:
         condition: service_healthy
@@ -68,7 +66,6 @@ services:
     build: 
       context: .
       dockerfile: docker/spark
-    container_name: spark-connect
     depends_on:
       spark-master:
         condition: service_healthy
@@ -135,7 +132,6 @@ services:
     scale: 2  # This creates 2 worker instances
   postgres:
     image: bitnami/postgresql:17.5.0
-    container_name: postgres
     networks:
       - spark-network
     environment:
@@ -167,7 +163,6 @@ services:
       retries: 5
       start_period: 30s
   iceberg-rest:
-    container_name: iceberg-rest
     build:
       context: .
       dockerfile: docker/iceberg-rest
@@ -211,7 +206,6 @@ services:
       retries: 3
       start_period: 40s
   minio:
-    container_name: minio
     image: minio/minio
     networks:
       spark-network:
@@ -235,7 +229,6 @@ services:
       retries: 5
       start_period: 30s
   mc:
-    container_name: mc
     depends_on:
       minio:
         condition: service_healthy
@@ -254,6 +247,7 @@ services:
       start_period: 30s
     volumes:
       - ./scripts/init_minio.sh:/init_minio.sh
+      - ./data:/data
     entrypoint: |
       /bin/sh -c "
       chmod +x /init_minio.sh;
@@ -262,7 +256,7 @@ services:
     restart: unless-stopped
 volumes:
   spark-logs:
-  postgres_data:  # Add PostgreSQL volume
+  postgres_data:
 networks:
   spark-network:
     driver: bridge

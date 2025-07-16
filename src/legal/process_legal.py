@@ -9,8 +9,7 @@ import argparse
 from pathlib import Path
 import time
 import sys
-from typing import List, Dict, Any
-import uuid
+from typing import List
 
 from pyspark.sql import SparkSession, DataFrame, Row
 from pyspark.sql.functions import (
@@ -27,17 +26,22 @@ from pyspark.sql.functions import (
     sha2,
     when,
     count,
-    to_timestamp,
 )
 from pyspark.sql.types import StringType, LongType, TimestampType
 from src.utils.logger import HybridLogger
 from src.utils.session import create_spark_session, SparkVersion
 from src.schemas.schema import SchemaManager
+from src.utils.process import (
+    generate_job_id,
+    basic_load_validation,
+    insert_records,
+    process_pipeline_results,
+)
 
 # Initialize SchemaManager and get schema version
 schema_manager = SchemaManager()
 schema_dict = schema_manager.get_schema("legal_doc_metadata")
-SCHEMA_VERSION = schema_dict["schema_version"]
+SCHEMA_VERSION = schema_dict["version"]
 
 
 def is_minio_path(path_str: str) -> bool:
@@ -90,54 +94,7 @@ def list_files_distributed(spark: SparkSession, file_dir: str) -> DataFrame:
         )
     )
 
-    # files_metadata_df.cache()
-    file_count = files_metadata_df.count()
-    print(f" Found {file_count} files with metadata")
-
     return files_metadata_df
-
-
-def basic_load_validation(spark: SparkSession, table_name: str) -> bool:
-    """Validate table existence and get basic stats"""
-    print(f"\n🔍 Validating table: {table_name}")
-
-    # Parse namespace and table name from full table name
-    parts = table_name.split(".")
-    if len(parts) < 2:
-        print(f"❌ Invalid table name format: {table_name}")
-        return False
-
-    # For multi-level namespaces, join all parts except the last one
-    namespace = ".".join(parts[:-1])
-    table_name_only = parts[-1]
-
-    print(f"🔍 Checking namespace: {namespace}, table: {table_name_only}")
-
-    # Check table exists in the correct namespace
-    try:
-        tables = spark.sql(f"SHOW TABLES IN {namespace}")
-        table_list = tables.take(100)
-        table_exists = any(table_name_only == row.tableName for row in table_list)
-
-        if not table_exists:
-            print(f"❌ Table {table_name} does not exist in namespace {namespace}!")
-            return False
-
-        # Get row count
-        count_result = spark.sql(f"SELECT COUNT(*) as total_count FROM {table_name}")
-        total_count = count_result.take(1)[0]["total_count"]
-        print(f"📊 Total records: {total_count:,}")
-
-        return True
-
-    except Exception as e:
-        print(f"❌ Error validating table {table_name}: {e}")
-        return False
-
-
-def generate_job_id() -> str:
-    """Generate unique job identifier"""
-    return f"legal_insert_{int(time.time())}_{uuid.uuid4().hex[:8]}"
 
 
 def process_records(
@@ -243,6 +200,8 @@ def process_records(
     # CRITICAL: Filter out any records where document_id is NULL.
     # This ensures a clean primary key for MERGE INTO.
     final_df_filtered = final_df.filter(col("document_id").isNotNull())
+    if final_df_filtered.isEmpty():
+        raise Exception("No valid records found after processing")
 
     # --- Optimization 6: Trigger Actions Once for Metrics and Debugging ---
     # Cache the final, cleaned DataFrame *before* the first action
@@ -320,143 +279,17 @@ def insert_dummy_data(spark: SparkSession, table_name: str) -> bool:
     return True
 
 
-def insert_overwrite(
-    spark: SparkSession, source_df: DataFrame, table_name: str
-) -> bool:
-    """Insert overwrite to replace all data in the table"""
-    # spark.sql("SELECT COUNT(*) FROM legal.documents_snapshot").show()
-
-    print(f"📝 Inserting overwrite into {table_name} in staging branch")
-    # source_df.show()
-    source_df.writeTo(f"{table_name}.branch_staging").overwritePartitions()
-    # source_df.writeTo(f"{table_name}").option("branch", "staging").option(
-    #     "overwrite-mode", "dynamic"
-    # ).overwrite(lit(True)) # this doesn't work
-
-    # spark.sql("SELECT name, snapshot_id FROM legal.documents_snapshot.refs").show()
-
-    table = spark.read.option("branch", "staging").table(table_name)
-    print(
-        f"✅ Inserted DataFrame into {table_name} staging branch with {table.count()} rows"
-    )
-
-    return True
-
-
-def merge_to_iceberg_table(
-    spark: SparkSession, source_df: DataFrame, table_name: str
-) -> bool:
-    """Optimized merge without debug operations"""
-    temp_view = "temp_merge_view"
-    source_df.createOrReplaceTempView(temp_view)
-
-    columns = source_df.columns
-    update_columns = [col for col in columns if col != "document_id"]
-
-    set_clause = ",\n  ".join([f"t.{col} = s.{col}" for col in update_columns])
-    insert_cols = ", ".join([f"{col}" for col in columns])
-    insert_vals = ", ".join([f"s.{col}" for col in columns])
-
-    merge_sql = f"""
-    MERGE INTO {table_name} t
-    USING {temp_view} s
-    ON t.document_id = s.document_id
-    AND day(t.generated_at) = day(s.generated_at)
-    WHEN MATCHED THEN UPDATE SET
-      {set_clause}
-    WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})
-    """
-
-    spark.sql(merge_sql)
-    return True
-
-
-def insert_records(
-    spark: SparkSession,
-    docs_dir: str,
-    table_name: str,
-    processed_dataframes: List[DataFrame],
-    observability_logger: HybridLogger,
-) -> Dict[str, Any]:
-    """Insert processed data with comprehensive metrics"""
-    print(f" Loading files from {docs_dir} into {table_name}")
-
-    # Start insertion operation
-    observability_logger.start_operation("data_insertion", "insert_records")
-    insertion_start = time.time()
-
-    successful_inserts = 0
-    failed_inserts = 0
-    error_codes = {}
-
-    for i, df in enumerate(processed_dataframes):
-        if df is not None:
-            try:
-                insert_overwrite(spark, df, table_name)
-                df_count = int(df.count())  # Convert to regular int
-                successful_inserts += df_count
-                # Log business event with converted types
-                observability_logger.log_business_event(
-                    "dataframe_inserted",
-                    {
-                        "dataframe_index": int(i),
-                        "records_inserted": df_count,
-                        "table_name": table_name,
-                    },
-                )
-
-            except Exception as e:
-                df_count = int(df.count())  # Convert to regular int
-                failed_inserts += df_count
-                error_codes["E004"] = (
-                    error_codes.get("E004", 0) + df_count
-                )  # SCHEMA_MISMATCH
-
-                # Log error with converted types
-                observability_logger.log_error(
-                    e,
-                    {
-                        "dataframe_index": int(i),
-                        "records_failed": df_count,
-                        "error_type": "INSERTION_ERROR",
-                    },
-                )
-
-                print(f"❌ Failed to insert DataFrame {i+1}: {e}")
-
-    # Calculate insertion time
-    insertion_time = time.time() - insertion_start
-
-    # Log performance metrics with converted types
-    observability_logger.log_performance(
-        "data_insertion_complete",
-        {
-            "successful_inserts": int(successful_inserts),
-            "failed_inserts": int(failed_inserts),
-            "insertion_time_ms": int(insertion_time * 1000),
-            "total_dataframes": int(len(processed_dataframes)),
-        },
-    )
-
-    # End operation
-    observability_logger.end_operation(
-        execution_time=insertion_time, result_count=int(successful_inserts)
-    )
-
-    return {
-        "successful_inserts": int(successful_inserts),
-        "failed_inserts": int(failed_inserts),
-        "error_codes": error_codes,
-    }
-
-
 def main():
     """Main function for ELT pipeline"""
     parser = argparse.ArgumentParser(description="ELT Pipeline for Legal Documents")
     parser.add_argument(
         "--file-dir", type=str, required=True, help="Path to files to process"
     )
-    parser.add_argument("--table-name", type=str, help="Target table name")
+    parser.add_argument(
+        "--table-name",
+        type=str,
+        help="Target table name. must include catalog name (ex: iceberg.namespace.table_name)",
+    )
     parser.add_argument(
         "--validate-existing-data",
         action="store_true",
@@ -498,7 +331,7 @@ def main():
     spark = create_spark_session(
         app_name=Path(__file__).stem,
         spark_version=SparkVersion.SPARK_CONNECT_3_5,
-        **{"spark.wap.branch": "staging"},
+        additional_configs={"spark.wap.branch": "staging"},
     )
 
     with HybridLogger(
@@ -515,7 +348,7 @@ def main():
 
         if args.validate_existing_data:
             print("\n🔍 Validating existing data in database...")
-            basic_load_validation(observability_logger.spark, args.table_name)
+            basic_load_validation(observability_logger.spark or spark, args.table_name)
             if args.show_failed:
                 # Simplified - just show basic validation
                 print("No failed loads to show")
@@ -525,7 +358,7 @@ def main():
         files_metadata_df = list_files_distributed(spark, args.file_dir)
         if files_metadata_df.count() == 0:
             print(f"❌ No files found in path {args.file_dir}")
-            observability_logger.log_error(
+            observability_logger.log(
                 Exception(f"No files found in MinIO path: {args.file_dir}"),
                 {"error_type": "NO_FILES_FOUND"},
             )
@@ -534,77 +367,30 @@ def main():
         print(f"Found {files_metadata_df.count()} files with metadata")
 
         processed_dataframes = process_records(
-            spark=observability_logger.spark,
+            spark=observability_logger.spark or spark,
             files_metadata_df=files_metadata_df,
             job_id=job_id,
             observability_logger=observability_logger,
         )
 
         insert_results = insert_records(
-            spark=observability_logger.spark,
+            spark=observability_logger.spark or spark,
             docs_dir=args.file_dir,
             table_name=args.table_name,
             processed_dataframes=processed_dataframes,
             observability_logger=observability_logger,
         )
 
-        processing_time_seconds = time.time() - job_start_time
-
-        successful_inserts = insert_results.get("successful_inserts", 0)
-        failed_inserts = insert_results.get("failed_inserts", 0)
-        content_files_count = files_metadata_df.filter(
-            col("is_content_file") == True
-        ).count()
-        processing_time_seconds = time.time() - job_start_time
-
-        partition_metrics = {
-            "total_partitions": 4,
-            "files_per_partition": (
-                content_files_count // 4 if content_files_count > 0 else 0
-            ),
-            "processing_time_seconds": processing_time_seconds,
-            "success_rate": (
-                successful_inserts / content_files_count
-                if content_files_count > 0
-                else 0
-            ),
-        }
-
-        print(f"✅ Distributed processing complete:")
-        print(f"   - Total content files: {content_files_count}")
-        print(f"   - Successful: {successful_inserts}")
-        print(f"   - Failed: {failed_inserts}")
-        print(f"   - Processing time: {processing_time_seconds:.2f}s")
-        print(f"   - Success rate: {partition_metrics['success_rate']:.2%}")
-
-        success = failed_inserts == 0
-
-        print(f"\n Processing Summary:")
-        print(f"   Success: {success}")
-        print(
-            f"   Total Files Processed: {insert_results.get('total_files_processed', 0)}"
+        process_pipeline_results(
+            insert_results=insert_results,
+            job_start_time=job_start_time,
+            files_metadata_df=files_metadata_df,
+            content_filter_column="is_content_file",
+            observability_logger=observability_logger,
+            spark_session=observability_logger.spark or spark,
+            table_name=args.table_name,
+            show_failed=args.show_failed,
         )
-        print(f"   Successful Inserts: {insert_results.get('successful_inserts', 0)}")
-        print(f"   Failed Inserts: {insert_results.get('failed_inserts', 0)}")
-        print(f"   Success Rate: {insert_results.get('success_rate', 0.0):.2%}")
-
-        if success:
-            print("\n✅ ELT pipeline completed successfully")
-            basic_load_validation(observability_logger.spark, args.table_name)
-            if args.show_failed:
-                print("No failed loads to show")
-
-        execution_time = time.time() - job_start_time
-        observability_logger.end_operation(execution_time=execution_time)
-        observability_logger.log_performance(
-            "operation_complete",
-            {
-                "operation": "insert_files",
-                "execution_time_seconds": round(execution_time, 4),
-                "status": "success",
-            },
-        )
-
         return 0
 
 

@@ -1,0 +1,39 @@
+{
+    // Excludes files/folders from the File Explorer sidebar
+    "files.exclude": {
+        "**/*.csv": true,        // Exclude all CSV files everywhere
+        "data/**/*.json": true,  // Exclude JSONs inside a 'data' folder
+        "output/": true,         // Exclude the entire 'output' folder
+        "logs/": true,           // Exclude the entire 'logs' folder
+        "temp/**": true,         // Exclude contents of 'temp' folder recursively
+        "*.parquet": true,        // Exclude all Parquet files
+        "*.db": true        // Exclude all Parquet files
+    },
+
+    // Excludes files/folders from global search (Ctrl+Shift+F)
+    "search.exclude": {
+        "**/*.csv": true,
+        "data/**/*.json": true,
+        "output/": true,
+        "logs/": true,
+        "temp/**": true,
+        "*.parquet": true,
+        "**/node_modules": true, // Common for JS/TS projects
+        "**/venv": true,          // Common for Python projects
+        "*.db": true        // Exclude all Parquet files
+    },
+
+    // Excludes files/folders from the file watcher.
+    // Critical for performance if these files change frequently or there are many.
+    "files.watcherExclude": {
+        "**/*.csv": true,
+        "data/**/*.json": true,
+        "output/**": true,       // Note: watcherExclude usually requires '**' for folders
+        "logs/**": true,
+        "temp/**": true,
+        "*.parquet": true,
+        "**/node_modules/**": true,
+        "**/venv/**": true,
+        "*.db": true        // Exclude all Parquet files
+    }
+}

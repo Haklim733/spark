@@ -116,10 +116,20 @@ class DDLLoader:
         """Execute DDL from a SQL file using Spark SQL for Iceberg tables"""
         print(f"📝 Executing Iceberg DDL")
 
+        # Validate session upfront
+        try:
+            spark.sql("SELECT 1").collect()
+        except Exception as e:
+            raise RuntimeError(f"Spark session is not active: {e}")
+
         # Clean and split statements
         statements = self._clean_sql_statements(ddl_content)
 
-        # Execute each statement
+        if not statements:
+            print("⚠️  No DDL statements found")
+            return True
+
+        # Execute each statement with validation
         success_count = 0
         total_statements = len(statements)
 
@@ -129,12 +139,20 @@ class DDLLoader:
             )
 
             try:
+                # Validate session before each statement
+                spark.sql("SELECT 1").collect()
+
+                # Execute the DDL statement
                 spark.sql(sql_statement)
+
                 print(f"✅ Successfully executed statement {i}")
                 success_count += 1
+
             except Exception as e:
                 print(f"❌ Error executing statement {i}: {e}")
                 print(f"   Statement: {sql_statement}")
+                # Log but continue with remaining statements
+                continue
 
         print(f"✅ Successfully executed {success_count}/{total_statements} statements")
         return success_count == total_statements

@@ -21,7 +21,6 @@ import re
 from faker import Faker
 
 from minio import Minio
-from minio.error import S3Error
 
 from src.schemas.schema import SchemaManager
 
@@ -257,15 +256,13 @@ def create_document_metadata(doc: Dict[str, Any], doc_uuid: str) -> Dict[str, An
                         generated_at = dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
                 metadata[field_name] = generated_at
         elif field_name == "source":
-            # Use default from schema if available
-            field_props = properties.get(field_name, {})
-            default_value = field_props.get("default", "soli_legal_document_generator")
-            metadata[field_name] = default_value
+            # Always use the schema default
+            metadata[field_name] = "soli_legal_document_generator"
         elif field_name == "language":
-            # Use default from schema if available
-            field_props = properties.get(field_name, {})
-            default_value = field_props.get("default", "en")
-            metadata[field_name] = default_value
+            # Use schema enum values with weighted selection (80% English)
+            language_options = ["en", "es", "fr", "de", "it", "pt"]
+            weights = [0.8, 0.04, 0.04, 0.04, 0.04, 0.04]  # 80% English, 4% each other
+            metadata[field_name] = random.choices(language_options, weights=weights)[0]
         elif field_name == "file_size":
             # Calculate file size from content
             content_size = len(doc["content"].encode("utf-8"))
@@ -274,8 +271,15 @@ def create_document_metadata(doc: Dict[str, Any], doc_uuid: str) -> Dict[str, An
             # Set placeholder that will be updated during save
             metadata[field_name] = f"placeholder/{doc['document_id']}.txt"
         elif field_name == "method":
-            # Use default method for generation
-            metadata[field_name] = "sequential"
+            # Use schema enum values
+            method_options = [
+                "sequential",
+                "spark",
+                "local",
+                "parallel_batch",
+                "distributed",
+            ]
+            metadata[field_name] = random.choice(method_options)
         else:
             # For any other fields, use null if not relevant
             metadata[field_name] = None
@@ -320,8 +324,8 @@ def save_documents_to_minio(
         metadata_filename = f"{doc_id}.json"
 
         # Build full paths within the bucket with separate directories
-        content_path = f"{key}/{doc_type}/{current_date}/content/{content_filename}"
-        metadata_path = f"{key}/{doc_type}/{current_date}/metadata/{metadata_filename}"
+        content_path = f"{key}/{current_date}/{doc_type}/content/{content_filename}"
+        metadata_path = f"{key}/{current_date}/{doc_type}/metadata/{metadata_filename}"
 
         # Prepare content
         content = doc["content"]
@@ -329,6 +333,9 @@ def save_documents_to_minio(
 
         # Create metadata
         metadata = create_document_metadata(doc, doc_id)
+
+        # Update file_path in metadata to actual S3 path
+        metadata["file_path"] = f"s3a://{bucket_name}/{content_path}"
 
         # Validate metadata before saving
         if not schema_manager.validate_legal_document_metadata(metadata):

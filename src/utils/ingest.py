@@ -11,7 +11,11 @@ from pyspark.sql.functions import (
     regexp_extract,
     when,
     trim,
+    spark_partition_id,
+    monotonically_increasing_id,
+    lit,
 )
+from pyspark.sql.types import IntegerType
 from src.utils.logger import HybridLogger
 from src.utils.metrics import (
     Operation,
@@ -30,105 +34,182 @@ class InsertMode(Enum):
     MERGE = "merge"
 
 
+def _safe_add_partition_info(df: DataFrame, logger: Optional[HybridLogger] = None):
+    """Safely add partition info for Spark Connect compatibility"""
+    try:
+        # Try to add partition information for debugging
+        df_with_partition = df.withColumn("spark_partition_id", spark_partition_id())
+        partition_stats = (
+            df_with_partition.groupBy("spark_partition_id")
+            .count()
+            .withColumnRenamed("count", "record_count")  # Rename to avoid confusion
+            .collect()
+        )
+
+        return [
+            {
+                "partition_id": row.spark_partition_id,
+                "record_count": row.record_count,  # Now uses the renamed column
+            }
+            for row in partition_stats
+        ]
+    except Exception as e:
+        if logger:
+            print(
+                f"Warning: Could not add partition info (Spark Connect limitation): {e}"
+            )
+        # Return empty list if partition functions not available
+        return []
+
+
+def _safe_add_distributed_columns(df: DataFrame):
+    """Safely add distributed processing columns for Spark Connect compatibility"""
+    try:
+        # Try to add distributed processing columns
+        return df.withColumn("spark_partition_id", spark_partition_id()).withColumn(
+            "task_execution_id", monotonically_increasing_id()
+        )
+    except Exception:
+        # Fallback: add literal values if functions not available
+        return df.withColumn("spark_partition_id", lit(-1)).withColumn(
+            "task_execution_id", lit(-1)
+        )
+
+
 def list_files(
     spark: SparkSession,
     path_pattern: str,
-    logger: HybridLogger,
+    logger: Optional[HybridLogger] = None,
     limit: Optional[int] = None,
-    *args,
-) -> list[str]:
+    method: str = "binaryFile",
+    metadata: list[str] = ["path"],
+) -> tuple[list[str], int]:
     """Count input files without reading data - for inputs_discovered metric"""
     try:
-        if args:
-            partition_path = "/".join(args)
-            path_pattern = f"{path_pattern}/{partition_path}/**/*.parquet"
-
-        files_df = spark.read.format("binaryFile").load(path_pattern).select("path")
+        files_df = spark.read.format(method).load(path_pattern).select(*metadata)
 
         if limit:
             files_df = files_df.limit(limit)
 
+        file_count = int(files_df.count())
         file_paths = [row.path for row in files_df.collect()]
-        file_count = len(file_paths)
 
-        logger.log(
-            Operation.FILE_LIST.value,
-            OperationStatus.SUCCESS.value,
-            {
-                "path_pattern": path_pattern,
-                "limit": limit,
-                "file_count": file_count,
-            },
-        )
+        if logger:
+            # Safely get partition distribution for debugging
+            partition_distribution = _safe_add_partition_info(files_df, logger)
 
-        return file_paths
+            logger.log(
+                Operation.FILE_LIST.value,
+                OperationStatus.SUCCESS.value,
+                {
+                    "path_pattern": path_pattern,
+                    "limit": limit,
+                    "file_count": file_count,
+                    "partition_distribution": partition_distribution,
+                },
+            )
+
+        return file_paths, file_count
 
     except Exception as e:
-        logger.log(
-            Operation.FILE_LIST.value,
-            OperationStatus.ERROR.value,
-            {
-                "error_code": ErrorCode.FILE_LISTING_ERROR.value,
-                "error_message": str(e),
-            },
-        )
+        if logger:
+            # Get distributed context for error debugging
+            try:
+                spark_context = spark.sparkContext
+                distributed_context = {
+                    "spark_app_id": spark_context.applicationId,
+                    "default_parallelism": spark_context.defaultParallelism,
+                }
+            except:
+                distributed_context = {}
+
+            logger.log(
+                Operation.FILE_LIST.value,
+                OperationStatus.ERROR.value,
+                {
+                    "error_code": ErrorCode.FILE_LISTING_ERROR.value,
+                    "error_message": str(e),
+                    **distributed_context,
+                },
+            )
         raise e
 
 
 def read_files(
     spark: SparkSession,
     file_paths: list[str],
-    logger: HybridLogger,
+    mode: str = "parquet",
+    extraction_rules: dict[str, str] = {},
+    logger: Optional[HybridLogger] = None,
 ) -> DataFrame:
-    """Create lazy DataFrame for parquet data with conditional partition columns"""
-    if not file_paths:
-        error = ValueError("No file paths provided")
-        logger.log(
-            Operation.FILE_READ.value,
-            OperationStatus.ERROR.value,
-            {
-                "error_code": ErrorCode.FILE_LISTING_ERROR.value,
-                "error_message": str(error),
-            },
-        )
-        raise error
+    """Optimized: Read files and extract metadata in single operation"""
+    try:
+        data_df = spark.read.format(mode).load(file_paths)
 
-    # LAZY EVALUATION - No data is read until action
-    lazy_df = spark.read.parquet(*file_paths)
+        # Add source file path for tracking and extraction
+        data_df = data_df.withColumn("file_path", input_file_name())
 
-    # Always add file_path
-    lazy_df = lazy_df.withColumn("file_path", input_file_name())
+        # Extract metadata from file paths in same operation
+        if extraction_rules:
+            print(f"   Extracting metadata: {list(extraction_rules.keys())}")
 
-    # Check if partition patterns exist by testing the first file path
-    sample_path = file_paths[0] if file_paths else ""
+            for column_name, regex_pattern in extraction_rules.items():
+                data_df = data_df.withColumn(
+                    column_name,
+                    regexp_extract(col("file_path"), regex_pattern, 1),
+                )
 
-    # Add system_id column only if pattern exists in paths
-    if "system_id=" in sample_path:
-        lazy_df = lazy_df.withColumn(
-            "system_id",
-            regexp_extract(input_file_name(), r"system_id=(\d+)", 1).cast("int"),
-        )
+        print(f"✅ Data loaded with columns: {data_df.columns}")
 
-    # Add year column only if pattern exists in paths
-    if "year=" in sample_path:
-        lazy_df = lazy_df.withColumn(
-            "year", regexp_extract(input_file_name(), r"year=(\d{4})", 1).cast("int")
-        )
+        if logger:
+            # Safely get partition distribution for debugging
+            partition_distribution = _safe_add_partition_info(data_df, logger)
 
-    # Add month column only if pattern exists in paths
-    if "month=" in sample_path:
-        lazy_df = lazy_df.withColumn(
-            "month",
-            regexp_extract(input_file_name(), r"month=(\d{1,2})", 1).cast("int"),
-        )
+            logger.log(
+                Operation.FILE_READ.value,
+                OperationStatus.SUCCESS.value,
+                {
+                    "operation": "read_files_with_extraction",
+                    "mode": mode,
+                    "extracted_columns": (
+                        list(extraction_rules.keys()) if extraction_rules else []
+                    ),
+                    "total_records": data_df.count(),
+                    "partition_distribution": partition_distribution,
+                },
+            )
 
-    # Add day column only if pattern exists in paths
-    if "day=" in sample_path:
-        lazy_df = lazy_df.withColumn(
-            "day", regexp_extract(input_file_name(), r"day=(\d{1,2})", 1).cast("int")
-        )
+        return data_df
 
-    return lazy_df
+    except Exception as e:
+        if logger:
+            # Try to get some distributed context even in error case
+            try:
+                spark_context = spark.sparkContext
+                app_id = spark_context.applicationId
+                default_parallelism = spark_context.defaultParallelism
+                distributed_context = {
+                    "spark_app_id": app_id,
+                    "default_parallelism": default_parallelism,
+                }
+            except:
+                distributed_context = {}
+
+            logger.log(
+                Operation.FILE_READ.value,
+                OperationStatus.ERROR.value,
+                {
+                    "error_code": ErrorCode.FILE_LISTING_ERROR.value,
+                    "error_message": str(e),
+                    "file_paths": file_paths,
+                    "mode": mode,
+                    "extracted_columns": (
+                        list(extraction_rules.keys()) if extraction_rules else []
+                    ),
+                    **distributed_context,
+                },
+            )
+        raise
 
 
 def safe_cast_columns(
@@ -154,10 +235,17 @@ def safe_cast_columns(
             expressions.append(col(col_name))
 
     if logger:
+        # Safely get partition distribution for debugging
+        partition_distribution = _safe_add_partition_info(df, logger)
+
         logger.log(
             Operation.DATAFRAME_OPERATION.value,
             OperationStatus.SUCCESS.value,
-            {"columns_cast": columns, "target_type": str(col_type())},
+            {
+                "columns_cast": columns,
+                "target_type": str(col_type()),
+                "partition_distribution": partition_distribution,
+            },
         )
 
     return df.select(*expressions)  # lazy
@@ -191,6 +279,9 @@ def insert_records(
         insertion_time = time.time() - insertion_start
         records_processed = int(data.count())
 
+        # Safely get partition distribution for debugging
+        partition_distribution = _safe_add_partition_info(data, hybrid_logger)
+
         # Log successful insertion
         hybrid_logger.log(
             Operation.TABLE_INSERT.value,
@@ -199,6 +290,8 @@ def insert_records(
                 OperationMetric.RECORDS_PROCESSED.value: records_processed,
                 OperationMetric.EXECUTION_TIME_MS.value: int(insertion_time * 1000),
                 "table_name": table_name,
+                "insert_mode": mode.value,
+                "partition_distribution": partition_distribution,
             },
         )
 
@@ -213,6 +306,9 @@ def insert_records(
     except Exception as e:
         insertion_time = time.time() - insertion_start
 
+        # Try to get partition info even in error case for debugging
+        partition_distribution = _safe_add_partition_info(data, hybrid_logger)
+
         hybrid_logger.log(
             Operation.TABLE_INSERT.value,
             OperationStatus.ERROR.value,
@@ -221,6 +317,8 @@ def insert_records(
                 "table_name": table_name,
                 OperationMetric.EXECUTION_TIME_MS.value: int(insertion_time * 1000),
                 "error_message": str(e),
+                "insert_mode": mode.value,
+                "partition_distribution": partition_distribution,
             },
         )
 
@@ -245,12 +343,22 @@ def check_table_exists(
         tables = spark.sql(f"SHOW TABLES IN {namespace}")
         table_list = [row.tableName for row in tables.collect()]
 
+        # Get distributed context for debugging
+        try:
+            spark_context = spark.sparkContext
+            distributed_context = {
+                "spark_app_id": spark_context.applicationId,
+                "default_parallelism": spark_context.defaultParallelism,
+            }
+        except:
+            distributed_context = {}
+
         if table_name in table_list:
             print(f"✅ Table exists: {full_table_name}")
             hybrid_logger.log(
                 Operation.TABLE_EXISTS_CHECK.value,
                 OperationStatus.SUCCESS.value,
-                {"table": full_table_name, "exists": True},
+                {"table": full_table_name, "exists": True, **distributed_context},
             )
         else:
             print(f"❌ Table does not exist: {full_table_name}")
@@ -261,6 +369,7 @@ def check_table_exists(
                     "table": full_table_name,
                     "exists": False,
                     "available_tables": table_list,
+                    **distributed_context,
                 },
             )
 
@@ -295,6 +404,16 @@ def load_validation(
 
         assert total_count == count, "Total count does not match"
 
+        # Get distributed context for debugging
+        try:
+            spark_context = spark.sparkContext
+            distributed_context = {
+                "spark_app_id": spark_context.applicationId,
+                "default_parallelism": spark_context.defaultParallelism,
+            }
+        except:
+            distributed_context = {}
+
         hybrid_logger.log(
             Operation.TABLE_VALIDATION.value,
             OperationStatus.SUCCESS.value,
@@ -302,17 +421,29 @@ def load_validation(
                 "table": f"{namespace}.{table_name}",
                 OperationMetric.ACTUAL_COUNT.value: total_count,
                 OperationMetric.EXPECTED_COUNT.value: count,
+                **distributed_context,
             },
         )
         return True
 
     except Exception as e:
+        # Get distributed context for error case too
+        try:
+            spark_context = spark.sparkContext
+            distributed_context = {
+                "spark_app_id": spark_context.applicationId,
+                "default_parallelism": spark_context.defaultParallelism,
+            }
+        except:
+            distributed_context = {}
+
         hybrid_logger.log(
             Operation.TABLE_VALIDATION.value,
             OperationStatus.ERROR.value,
             {
                 "error_code": ErrorCode.LOAD_COUNT_MISMATCH.value,
                 "error_message": str(e),
+                **distributed_context,
             },
         )
         return False

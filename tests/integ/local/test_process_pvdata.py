@@ -85,25 +85,20 @@ class TestSiteIntegration:
     def test_real_site_pipeline(self, spark_session, test_namespace, pv_site_table):
         """Test site pipeline main function"""
 
-        # Override the target namespace for testing by temporarily modifying the source
-        # Note: In a real implementation, you might want to make namespace configurable
-        try:
-            site_main(
-                namespace="test", table_name="pv_site", limit=10
-            )  # Limit records for faster testing
+        site_main(
+            namespace="test",
+            table_name="pv_site",
+            file_path_pattern="s3a://raw/site/*.parquet",
+            limit=10,
+            spark_session=spark_session,
+        )  # Limit records for faster testing
 
-            # Verify data was processed
-            result_df = spark_session.sql(
-                f"SELECT COUNT(*) as count FROM {pv_site_table}"
-            )
-            count = result_df.collect()[0]["count"]
-            assert count > 0, "Site pipeline should process some records"
+        # Verify data was processed
+        result_df = spark_session.sql(f"SELECT COUNT(*) as count FROM {pv_site_table}")
+        count = result_df.collect()[0]["count"]
+        assert count > 0, "Site pipeline should process some records"
 
-            print(f"✅ Site pipeline processed {count} records")
-
-        except Exception as e:
-            print(f"⚠️  Site pipeline test failed (may be due to no test data): {e}")
-            # Don't fail the test if no data available - this is expected in test environments
+        print(f"✅ Site pipeline processed {count} records")
 
 
 class TestSystemIntegration:
@@ -112,21 +107,20 @@ class TestSystemIntegration:
     def test_real_system_pipeline(self, spark_session, test_namespace, pv_system_table):
         """Test system pipeline main function"""
 
-        try:
-            system_main(namespace="test", table_name="pv_system")
+        system_main(
+            namespace="test",
+            table_name="pv_system",
+            file_path_pattern="s3a://raw/system/*.parquet",
+            limit=10,
+            spark_session=spark_session,
+        )
 
-            # Verify data was processed
-            result_df = spark_session.sql(
-                "SELECT COUNT(*) as count FROM test.pv_system"
-            )
-            count = result_df.collect()[0]["count"]
-            assert count > 0, "System pipeline should process some records"
+        # Verify data was processed
+        result_df = spark_session.sql("SELECT COUNT(*) as count FROM test.pv_system")
+        count = result_df.collect()[0]["count"]
+        assert count > 0, "System pipeline should process some records"
 
-            print(f"✅ System pipeline processed {count} records")
-
-        except Exception as e:
-            print(f"⚠️  System pipeline test failed (may be due to no test data): {e}")
-            # Don't fail the test if no data available
+        print(f"✅ System pipeline processed {count} records")
 
 
 class TestPVDataIntegration:
@@ -135,21 +129,20 @@ class TestPVDataIntegration:
     def test_real_pvdata_pipeline(self, spark_session, test_namespace, pv_data_table):
         """Test PV data pipeline main function"""
 
-        try:
-            pvdata_main(namespace="test", table_name="pv_data", limit=10)
+        pvdata_main(
+            namespace="test",
+            table_name="pv_data",
+            file_path_pattern="s3a://raw/pvdata/system_id=3/",
+            limit=10,
+            spark_session=spark_session,
+        )
 
-            # Verify data was processed
-            result_df = spark_session.sql(
-                f"SELECT COUNT(*) as count FROM {pv_data_table}"
-            )
-            count = result_df.collect()[0]["count"]
-            assert count > 0, "PV data pipeline should process some records"
+        # Verify data was processed
+        result_df = spark_session.sql(f"SELECT COUNT(*) as count FROM {pv_data_table}")
+        count = result_df.collect()[0]["count"]
+        assert count > 0, "PV data pipeline should process some records"
 
-            print(f"✅ PV data pipeline processed {count} records")
-
-        except Exception as e:
-            print(f"⚠️  PV data pipeline test failed (may be due to no test data): {e}")
-            # Don't fail the test if no data available
+        print(f"✅ PV data pipeline processed {count} records")
 
 
 if __name__ == "__main__":

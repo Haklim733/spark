@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from pyspark.sql import SparkSession
 from pyspark.sql.types import DoubleType, TimestampType
 from pyspark.sql.functions import lit
 from src.utils.session import create_spark_session, SparkVersion
@@ -25,16 +26,26 @@ from src.utils.ingest import (
 )
 
 
-def main(namespace: str, table_name: str, limit: Optional[int] = None):
+def main(
+    namespace: str,
+    table_name: str,
+    file_path_pattern: str,
+    limit: Optional[int] = None,
+    spark_session: Optional[SparkSession] = None,
+):
     """Main function to process site data"""
     app_name = Path(__file__).stem
-
-    # Create Spark session for Iceberg operations
-    spark = create_spark_session(
-        spark_version=SparkVersion.SPARK_CONNECT_3_5,
-        app_name=app_name,
-        catalog="iceberg",
-    )
+    # Use provided Spark session or create a new one
+    if spark_session is not None:
+        spark = spark_session
+        should_stop_spark = False  # Don't stop session we didn't create
+    else:
+        spark = create_spark_session(
+            spark_version=SparkVersion.SPARK_CONNECT_3_5,
+            app_name=app_name,
+            catalog="iceberg",
+        )
+        should_stop_spark = True  # Stop session we created
 
     try:
         job_id = generate_job_id()
@@ -50,15 +61,14 @@ def main(namespace: str, table_name: str, limit: Optional[int] = None):
             try:
                 print("📋 Loading site data files...")
                 target_path_pattern = f"s3a://raw/system/*.parquet"
-                files, file_count = list_files(
+                files_df, file_count = list_files(
                     spark, target_path_pattern, logger, limit
                 )
 
                 print(f"✅ Found {file_count} system records")
 
                 check_table_exists(spark, namespace, table_name, logger)
-
-                files_df = read_files(spark, files, logger)
+                files_df = read_files(spark, files_df, "parquet", {}, logger)
 
                 processed_df = safe_cast_columns(
                     df=files_df,
@@ -147,7 +157,8 @@ def main(namespace: str, table_name: str, limit: Optional[int] = None):
         print(f"❌ Error in site data processing: {e}")
         raise
     finally:
-        spark.stop()
+        if should_stop_spark:
+            spark.stop()
 
 
 if __name__ == "__main__":

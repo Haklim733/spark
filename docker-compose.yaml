@@ -247,7 +247,7 @@ services:
       start_period: 30s
     volumes:
       - ./scripts/init_minio.sh:/init_minio.sh
-      - ./data:/data
+      - ../data:/data
     entrypoint: |
       /bin/sh -c "
       chmod +x /init_minio.sh;

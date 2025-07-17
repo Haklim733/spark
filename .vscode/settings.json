@@ -7,7 +7,7 @@
         "logs/": true,           // Exclude the entire 'logs' folder
         "temp/**": true,         // Exclude contents of 'temp' folder recursively
         "*.parquet": true,        // Exclude all Parquet files
-        "*.db": true        // Exclude all Parquet files
+        "*.db": true,        // Exclude all Parquet files
     },
 
     // Excludes files/folders from global search (Ctrl+Shift+F)
@@ -20,7 +20,8 @@
         "*.parquet": true,
         "**/node_modules": true, // Common for JS/TS projects
         "**/venv": true,          // Common for Python projects
-        "*.db": true        // Exclude all Parquet files
+        "*.db": true,        // Exclude all Parquet files
+        "data/**": true
     },
 
     // Excludes files/folders from the file watcher.
@@ -34,6 +35,7 @@
         "*.parquet": true,
         "**/node_modules/**": true,
         "**/venv/**": true,
-        "*.db": true        // Exclude all Parquet files
+        "*.db": true,        // Exclude all Parquet files,
+        "data/**": true
     }
 }

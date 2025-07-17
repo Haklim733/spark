@@ -13,6 +13,45 @@ from datetime import datetime
 from pyspark.sql import SparkSession
 
 
+def _safe_json_serialize(obj):
+    """Safely serialize objects for JSON logging, handling non-serializable types"""
+    if hasattr(obj, "__call__"):
+        # Handle function objects
+        return f"<function {obj.__name__}>"
+    elif hasattr(obj, "item"):
+        # Handle numpy/pandas scalars that have .item() method
+        try:
+            return obj.item()
+        except:
+            return str(obj)
+    elif str(type(obj)).startswith("<class 'numpy.") or str(type(obj)).startswith(
+        "<class 'pandas."
+    ):
+        # Handle numpy/pandas types by string conversion and parsing
+        try:
+            return obj.item() if hasattr(obj, "item") else str(obj)
+        except:
+            return str(obj)
+    elif (
+        "int64" in str(type(obj))
+        or "int32" in str(type(obj))
+        or "int16" in str(type(obj))
+    ):
+        # Handle any int64/int32/int16 regardless of source
+        return int(obj)
+    elif "float64" in str(type(obj)) or "float32" in str(type(obj)):
+        # Handle any float64/float32 regardless of source
+        return float(obj)
+    elif "bool_" in str(type(obj)):
+        # Handle any boolean types
+        return bool(obj)
+    elif hasattr(obj, "__dict__"):
+        # Handle objects with attributes
+        return str(obj)
+    else:
+        return obj
+
+
 class HybridLogger:
     """Simplified logger for Spark Connect with file-based logging"""
 
@@ -69,6 +108,25 @@ class HybridLogger:
 
         return logger
 
+    def _safe_serialize_metrics(self, metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively serialize metrics to ensure JSON compatibility"""
+        serialized = {}
+        for key, value in metrics.items():
+            if isinstance(value, dict):
+                serialized[key] = self._safe_serialize_metrics(value)
+            elif isinstance(value, list):
+                serialized[key] = [
+                    (
+                        self._safe_serialize_metrics(item)
+                        if isinstance(item, dict)
+                        else _safe_json_serialize(item)
+                    )
+                    for item in value
+                ]
+            else:
+                serialized[key] = _safe_json_serialize(value)
+        return serialized
+
     def log(
         self,
         operation: str,
@@ -76,12 +134,15 @@ class HybridLogger:
         metrics: Dict[str, Any],
     ) -> None:
         """Consolidated logging for both operations and errors"""
+        # Safely serialize metrics to prevent JSON errors
+        safe_metrics = self._safe_serialize_metrics(metrics)
+
         log_entry = {
             "timestamp": datetime.utcnow().isoformat(),
             "job_id": self.job_id,
             "operation": operation,
             "status": status,
-            **metrics,
+            **safe_metrics,
         }
         # Store for later export
         self.log_entries.append(log_entry)

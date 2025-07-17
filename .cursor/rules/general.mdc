@@ -1,5 +1,0 @@
----
-alwaysApply: true
----
-Always check official package documentation first before suggesting code implementations. Verify the correct API usage, syntax, and best practices from the official docs before providing code examples. Do not immediately create new files without permission. but have an option to apply changes to the file where changes are recommended.
-Avoid try/except clauses unelss explicitly asked to when writing code
